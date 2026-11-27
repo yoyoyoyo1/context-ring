@@ -58,6 +58,12 @@ async function runCli() {
       } else {
         historyPeriod = '30d';
       }
+    } else if (arg === '--footer-quota' && args[i + 1]) {
+      const v = String(args[++i]).trim().toLowerCase();
+      patch.showFooterQuota = v === 'on' || v === 'true' || v === '1';
+    } else if (arg === '--footer-speed' && args[i + 1]) {
+      const v = String(args[++i]).trim().toLowerCase();
+      patch.showFooterSpeed = v === 'on' || v === 'true' || v === '1';
     } else if (arg === '--rehydrate' && args[i + 1]) {
       rehydrateAction = String(args[++i]).trim().toLowerCase();
     } else if (!arg.startsWith('--') && !conversationId) {

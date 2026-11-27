@@ -81,6 +81,11 @@ test('settings: 3 种精选形态、旧形态平滑回退与按模型上下文�
     const initial = store.get();
     assert.deepEqual(initial, normalizeSettings(DEFAULT_SETTINGS));
     assert.equal(initial.contextLimit, 0);
+    assert.equal(initial.showFooterQuota, true);
+    assert.equal(initial.showFooterSpeed, true);
+    assert.equal(store.set({ showFooterQuota: false, showFooterSpeed: false }).showFooterQuota, false);
+    assert.equal(store.get().showFooterSpeed, false);
+    assert.equal(store.set({ showFooterQuota: true, showFooterSpeed: true }).showFooterSpeed, true);
 
     // 验证所有 3 种形态均可合法保存
     for (const styleMode of STYLE_MODES) {
@@ -360,7 +365,11 @@ test('cdp-host & dashboard-ui: 目标识别、注入脚本语法合法性与工�
   assert.ok(injectedSource.includes('buildQuotaPairVisual'));
   assert.ok(injectedSource.includes('current-model-quota'));
   assert.ok(injectedSource.includes('agy-context-ring-quota-host'));
+  assert.ok(injectedSource.includes('agy-context-ring-speed-host'));
   assert.ok(injectedSource.includes('mountOrUpdateFooterQuota'));
+  assert.ok(injectedSource.includes('mountOrUpdateFooterSpeed'));
+  assert.ok(injectedSource.includes('modal-toggle-footer-quota'));
+  assert.ok(injectedSource.includes('modal-toggle-footer-speed'));
   assert.ok(injectedSource.includes('agy-context-ring-quota-tip'));
   assert.ok(injectedSource.includes('showQuotaTip'));
   assert.ok(injectedSource.includes('cr-gauge-track'));
@@ -388,6 +397,8 @@ test('cdp-host & dashboard-ui: 目标识别、注入脚本语法合法性与工�
   assert.ok(html.includes('/api/history'));
   assert.ok(html.includes('/api/rehydrate'));
   assert.ok(html.includes('/api/settings'));
+  assert.ok(html.includes('toggleFooterQuotaBtn'));
+  assert.ok(html.includes('toggleFooterSpeedBtn'));
   assert.ok(html.includes('/api/compact'));
 });
 

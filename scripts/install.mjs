@@ -12,6 +12,7 @@ import {
 } from '../lib/paths.mjs';
 import { createSettingsStore } from '../lib/settings.mjs';
 import { getConversationUsage } from '../lib/transcript-parser.mjs';
+import { enrichUsageWithTelemetry } from '../lib/ls-telemetry.mjs';
 import { getRehydrateStatus, removeRehydrateHook } from '../lib/rehydrate-manager.mjs';
 import {
   configureClientLaunchers,
@@ -191,12 +192,13 @@ async function syncRunningWindowsOverCdp(mode, settingsSnapshot, version, option
             if (match) targetCid = match[1];
           } catch {}
           // 仅对明确处于具体会话路由的窗口注入对应会话种子，空白新窗口绝不带入历史上下文
-          const seedUsage = targetCid
+          const baseSeed = targetCid
             ? getConversationUsage(targetCid, {
                 knownDistrosFile: options.knownDistrosFile || '',
                 allowLatestFallback: false,
               })
             : null;
+          const seedUsage = baseSeed ? await enrichUsageWithTelemetry(baseSeed) : null;
           const source =
             `window.__CONTEXT_RING_FORCE_RELOAD__ = true;\n` +
             `window.__CONTEXT_RING_SEED_USAGE__ = ${JSON.stringify(seedUsage)};\n` +

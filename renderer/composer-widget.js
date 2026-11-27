@@ -40,6 +40,7 @@
   const SETTINGS_MODAL_ID = 'agy-context-ring-settings-modal';
   const HOST_CLASS = 'agy-context-ring-host';
   const QUOTA_HOST_CLASS = 'agy-context-ring-quota-host';
+  const SPEED_HOST_CLASS = 'agy-context-ring-speed-host';
 
   const STYLE_OPTIONS = [
     { id: 'bottle', label: '玻璃瓶装水', desc: '双层波浪液面与上升气泡' },
@@ -93,6 +94,8 @@
       contextLimit: 0,
       modelContextLimits: {},
       showPercentText: true,
+      showFooterQuota: true,
+      showFooterSpeed: true,
       animateEffects: true,
       placement: 'right',
     },
@@ -172,6 +175,8 @@
       Number(a.contextLimit) === Number(b.contextLimit) &&
       JSON.stringify(a.modelContextLimits || {}) === JSON.stringify(b.modelContextLimits || {}) &&
       a.showPercentText === b.showPercentText &&
+      (a.showFooterQuota !== false) === (b.showFooterQuota !== false) &&
+      (a.showFooterSpeed !== false) === (b.showFooterSpeed !== false) &&
       a.animateEffects === b.animateEffects &&
       a.placement === b.placement
     );
@@ -383,6 +388,46 @@
       }
       .${QUOTA_HOST_CLASS}:hover {
         background: var(--secondary, rgba(148, 163, 184, 0.14));
+      }
+      .${SPEED_HOST_CLASS} {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        height: 24px;
+        padding: 0 6px;
+        margin-left: 2px;
+        border-radius: 9999px;
+        flex-shrink: 0;
+        cursor: default;
+        user-select: none;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 11.5px;
+        font-weight: 600;
+        line-height: 1;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: -0.02em;
+        color: var(--secondary-foreground, #64748b);
+        transition: background-color 0.16s ease, color 0.16s ease;
+      }
+      .${SPEED_HOST_CLASS}:empty {
+        display: none;
+      }
+      .${SPEED_HOST_CLASS}:hover {
+        background: var(--secondary, rgba(148, 163, 184, 0.14));
+      }
+      .${SPEED_HOST_CLASS}[data-grade="S"],
+      .${SPEED_HOST_CLASS}[data-grade="A"] { color: #059669; }
+      .dark .${SPEED_HOST_CLASS}[data-grade="S"],
+      .dark .${SPEED_HOST_CLASS}[data-grade="A"] { color: #34d399; }
+      .${SPEED_HOST_CLASS}[data-grade="B"] { color: #0284c7; }
+      .dark .${SPEED_HOST_CLASS}[data-grade="B"] { color: #38bdf8; }
+      .${SPEED_HOST_CLASS}[data-grade="C"] { color: #d97706; }
+      .dark .${SPEED_HOST_CLASS}[data-grade="C"] { color: #fbbf24; }
+      .${SPEED_HOST_CLASS}[data-grade="D"] { color: #dc2626; }
+      .dark .${SPEED_HOST_CLASS}[data-grade="D"] { color: #f87171; }
+      .${SPEED_HOST_CLASS} svg {
+        display: block;
+        flex-shrink: 0;
       }
       .cr-trigger-btn {
         display: inline-flex;
@@ -2257,6 +2302,70 @@
   }
 
   /**
+   * 悬停底栏测速胶囊时秒出生成速度、首字延迟与思考/回复拆分明细气泡
+   */
+  function showSpeedTip(anchorEl, speedData) {
+    if (!anchorEl || !speedData || (!speedData.displayTps && speedData.ttftSec === null && !speedData.outputTokens)) {
+      hideQuotaTip();
+      return;
+    }
+    const tip = getOrCreateQuotaTip();
+    tip.classList.toggle('is-dark', isDarkTheme());
+
+    const gradeColors = { S: '#10b981', A: '#10b981', B: '#0ea5e9', C: '#f59e0b', D: '#ef4444' };
+    const dotColor = gradeColors[speedData.grade] || '#64748b';
+    const rows = [];
+    if (speedData.grade || speedData.score !== null) {
+      const gradeText = [speedData.grade, speedData.gradeLabel].filter(Boolean).join(' · ') || '测速';
+      const scoreText = speedData.score !== null && speedData.score !== undefined ? `${speedData.score} 分` : '';
+      rows.push(
+        `<div class="cr-qtip-row"><span class="cr-qtip-dot" style="background:${dotColor}"></span><span class="cr-qtip-name">体验</span><span class="cr-qtip-pct" style="color:${dotColor}">${escapeHtml(gradeText)}</span>${scoreText ? `<span class="cr-qtip-reset">${escapeHtml(scoreText)}</span>` : ''}</div>`
+      );
+    }
+    if (speedData.displayTps) {
+      const e2eText =
+        speedData.tps && speedData.streamingTps && Math.abs(speedData.tps - speedData.streamingTps) >= 1
+          ? `端到端 ${speedData.tps.toFixed(1)} tok/s`
+          : '';
+      rows.push(
+        `<div class="cr-qtip-row"><span class="cr-qtip-dot" style="background:#0ea5e9"></span><span class="cr-qtip-name">流式</span><span class="cr-qtip-pct">${speedData.displayTps.toFixed(1)} tok/s</span>${e2eText ? `<span class="cr-qtip-reset">${escapeHtml(e2eText)}</span>` : ''}</div>`
+      );
+    }
+    if (speedData.ttftSec !== null && speedData.ttftSec !== undefined) {
+      const durText =
+        speedData.durationSec !== null && speedData.durationSec !== undefined
+          ? `总耗时 ${speedData.durationSec.toFixed(1)}s`
+          : '';
+      rows.push(
+        `<div class="cr-qtip-row"><span class="cr-qtip-dot" style="background:#8b5cf6"></span><span class="cr-qtip-name">首字</span><span class="cr-qtip-pct">${speedData.ttftSec.toFixed(2)}s</span>${durText ? `<span class="cr-qtip-reset">${escapeHtml(durText)}</span>` : ''}</div>`
+      );
+    }
+    if (speedData.thinkingTokens > 0 || speedData.responseTokens > 0) {
+      rows.push(
+        `<div class="cr-qtip-row"><span class="cr-qtip-dot" style="background:#10b981"></span><span class="cr-qtip-name">拆分</span><span class="cr-qtip-pct">思 ${formatCompactTokens(speedData.thinkingTokens)}</span><span class="cr-qtip-reset">文 ${formatCompactTokens(speedData.responseTokens)}</span></div>`
+      );
+    }
+
+    if (rows.length === 0) {
+      hideQuotaTip();
+      return;
+    }
+
+    tip.innerHTML = rows.join('');
+    tip.classList.add('is-open');
+
+    const rect = anchorEl.getBoundingClientRect();
+    const tipW = tip.offsetWidth || 190;
+    const tipH = tip.offsetHeight || 56;
+    let left = rect.left + rect.width / 2 - tipW / 2;
+    left = Math.max(8, Math.min(window.innerWidth - tipW - 8, left));
+    let top = rect.top - tipH - 7;
+    if (top < 8) top = rect.bottom + 7;
+    tip.style.left = `${Math.round(left)}px`;
+    tip.style.top = `${Math.round(top)}px`;
+  }
+
+  /**
    * 解析模型名称中的系列名与思考等级后缀（仅识别标准思考等级，保留 Orchestrator (Neon) 等独立变体名）
    */
   function parseModelFamilyAndEffort(label) {
@@ -3481,8 +3590,10 @@
             <div class="cr-custom-limits" data-role="modal-custom-limits"></div>
 
             <div class="cr-pref-row">
-              <span class="cr-pref-label">挂载位置与动效</span>
+              <span class="cr-pref-label">输入框底栏外置与动效</span>
               <div class="cr-pill-row">
+                <button type="button" class="cr-page-pill" data-role="modal-toggle-footer-quota">底栏额度 W/H</button>
+                <button type="button" class="cr-page-pill" data-role="modal-toggle-footer-speed">底栏测速 tok/s</button>
                 <button type="button" class="cr-page-pill" data-role="modal-toggle-pct">显示百分比</button>
                 <button type="button" class="cr-page-pill" data-role="modal-toggle-anim">动态效果</button>
                 <button type="button" class="cr-page-pill" data-role="modal-toggle-place">输入框靠右</button>
@@ -3682,6 +3793,12 @@
     });
 
     // 显示开关与位置切换
+    modal.querySelector('[data-role="modal-toggle-footer-quota"]').addEventListener('click', () => {
+      applySettingPatch({ showFooterQuota: currentSettings.showFooterQuota === false });
+    });
+    modal.querySelector('[data-role="modal-toggle-footer-speed"]').addEventListener('click', () => {
+      applySettingPatch({ showFooterSpeed: currentSettings.showFooterSpeed === false });
+    });
     modal.querySelector('[data-role="modal-toggle-pct"]').addEventListener('click', () => {
       applySettingPatch({ showPercentText: !currentSettings.showPercentText });
     });
@@ -3785,6 +3902,16 @@
         rhAlert.style.display = 'none';
       }
     }
+
+    const footerQuotaBtn = modal.querySelector('[data-role="modal-toggle-footer-quota"]');
+    const footerQuotaOn = currentSettings.showFooterQuota !== false;
+    footerQuotaBtn.classList.toggle('is-active', footerQuotaOn);
+    footerQuotaBtn.textContent = footerQuotaOn ? '底栏额度 W/H：开' : '底栏额度 W/H：关';
+
+    const footerSpeedBtn = modal.querySelector('[data-role="modal-toggle-footer-speed"]');
+    const footerSpeedOn = currentSettings.showFooterSpeed !== false;
+    footerSpeedBtn.classList.toggle('is-active', footerSpeedOn);
+    footerSpeedBtn.textContent = footerSpeedOn ? '底栏测速 tok/s：开' : '底栏测速 tok/s：关';
 
     const pctBtn = modal.querySelector('[data-role="modal-toggle-pct"]');
     pctBtn.classList.toggle('is-active', Boolean(currentSettings.showPercentText));
@@ -3913,25 +4040,15 @@
   }
 
   /**
-   * 在单个 .agy-composer-footer 模型选择器右侧挂载或更新 W / H 双圆环额度徽章
+   * 定位输入框底栏模型选择器所在的最内层横向 flex 容器及其直接包裹锚点
    */
-  function mountOrUpdateFooterQuota(footerEl, fallbackModelLabel = '') {
-    let quotaHostEl = footerEl.querySelector(`.${QUOTA_HOST_CLASS}`);
-
-    if (!currentSettings.enabled) {
-      if (quotaHostEl) quotaHostEl.remove();
-      return;
-    }
-
-    const leftGroup = footerEl.children[0] || footerEl;
-    if (!leftGroup) return;
-
+  function resolveFooterLeftFlexAnchor(footerEl) {
+    const leftGroup = footerEl?.children?.[0] || footerEl;
+    if (!leftGroup) return { targetContainer: null, anchor: null };
     const modelBtn =
       footerEl.querySelector('[data-testid="model-selector-trigger"]') ||
       footerEl.closest?.('.surface-composer-card')?.querySelector?.('[data-testid="model-selector-trigger"]') ||
       null;
-
-    // 向上寻找包含模型选择器的第一层横向 flex 容器（如与第三方测速组件共享的容器），把双圆环紧贴模型按钮右侧插入
     let anchor = modelBtn;
     let targetContainer = leftGroup;
     while (anchor && anchor.parentElement && anchor.parentElement !== leftGroup) {
@@ -3944,6 +4061,22 @@
       }
       anchor = parent;
     }
+    return { targetContainer, anchor };
+  }
+
+  /**
+   * 在单个 .agy-composer-footer 模型选择器右侧挂载或更新 W / H 双圆环额度徽章
+   */
+  function mountOrUpdateFooterQuota(footerEl, fallbackModelLabel = '') {
+    let quotaHostEl = footerEl.querySelector(`.${QUOTA_HOST_CLASS}`);
+
+    if (!currentSettings.enabled || currentSettings.showFooterQuota === false) {
+      if (quotaHostEl) quotaHostEl.remove();
+      return;
+    }
+
+    const { targetContainer, anchor } = resolveFooterLeftFlexAnchor(footerEl);
+    if (!targetContainer) return;
 
     if (!quotaHostEl) {
       quotaHostEl = document.createElement('div');
@@ -3974,7 +4107,6 @@
       const childrenArr = Array.from(targetContainer.children || []);
       const anchorIdx = childrenArr.indexOf(anchor);
       const currentIdx = childrenArr.indexOf(quotaHostEl);
-      // 仅在未挂载到目标容器或意外排到模型按钮左侧时插入，避免与 agy-powertools 等同级插件互相抢位抖动
       const needsMove = quotaHostEl.parentElement !== targetContainer || (anchorIdx >= 0 && currentIdx < anchorIdx);
       if (needsMove) {
         let insertIdx = anchorIdx + 1;
@@ -4004,6 +4136,86 @@
   }
 
   /**
+   * 在单个 .agy-composer-footer 模型选择器/额度圆环右侧挂载或更新实时生成速度胶囊（tok/s）
+   */
+  function mountOrUpdateFooterSpeed(footerEl, usageData) {
+    let speedHostEl = footerEl.querySelector(`.${SPEED_HOST_CLASS}`);
+
+    if (!currentSettings.enabled || currentSettings.showFooterSpeed === false) {
+      if (speedHostEl) speedHostEl.remove();
+      return;
+    }
+
+    const { targetContainer, anchor } = resolveFooterLeftFlexAnchor(footerEl);
+    if (!targetContainer) return;
+
+    if (!speedHostEl) {
+      speedHostEl = document.createElement('div');
+      speedHostEl.className = `${SPEED_HOST_CLASS} no-focus-agent-input`;
+      speedHostEl.setAttribute('data-testid', 'context-ring-speed-badge');
+
+      speedHostEl.addEventListener('mouseenter', () => {
+        if (speedHostEl._speedData) {
+          showSpeedTip(speedHostEl, speedHostEl._speedData);
+        }
+      });
+      speedHostEl.addEventListener('mouseleave', () => {
+        hideQuotaTip();
+      });
+    }
+
+    const quotaHostEl = footerEl.querySelector(`.${QUOTA_HOST_CLASS}`);
+    const refAnchor =
+      quotaHostEl && quotaHostEl.parentElement === targetContainer
+        ? quotaHostEl
+        : anchor && anchor.parentElement === targetContainer
+          ? anchor
+          : null;
+
+    if (refAnchor) {
+      const childrenArr = Array.from(targetContainer.children || []);
+      const refIdx = childrenArr.indexOf(refAnchor);
+      const currentIdx = childrenArr.indexOf(speedHostEl);
+      const needsMove = speedHostEl.parentElement !== targetContainer || (refIdx >= 0 && currentIdx < refIdx);
+      if (needsMove) {
+        let insertIdx = refIdx + 1;
+        while (insertIdx < childrenArr.length && childrenArr[insertIdx]?.hasAttribute?.('data-agy-powertools-root')) {
+          insertIdx++;
+        }
+        const nextNode = insertIdx < childrenArr.length ? childrenArr[insertIdx] : null;
+        targetContainer.insertBefore(speedHostEl, nextNode);
+      }
+    } else if (speedHostEl.parentElement !== targetContainer) {
+      targetContainer.appendChild(speedHostEl);
+    }
+
+    const sp = usageData?.speed || null;
+    speedHostEl._speedData = sp;
+    const hasSpeed = Boolean(sp && (sp.displayTps || sp.phase === 'warming'));
+    const grade = hasSpeed && sp.grade ? String(sp.grade) : '';
+    const textVal = hasSpeed
+      ? sp.displayTps
+        ? `${sp.displayTps.toFixed(1)} tok/s`
+        : '预热中'
+      : '';
+    const renderSig = `${textVal}|${grade}`;
+
+    if (speedHostEl.dataset.renderSig !== renderSig) {
+      speedHostEl.dataset.renderSig = renderSig;
+      if (!textVal) {
+        speedHostEl.innerHTML = '';
+        speedHostEl.removeAttribute?.('data-grade');
+        speedHostEl.removeAttribute?.('aria-label');
+      } else {
+        if (grade) speedHostEl.setAttribute('data-grade', grade);
+        else speedHostEl.removeAttribute?.('data-grade');
+        speedHostEl.innerHTML = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8.5" r="5.5"/><path d="M8 8.5L10.8 5.7"/><path d="M6.2 2h3.6"/></svg><span>${escapeHtml(textVal)}</span>`;
+        speedHostEl.setAttribute('aria-label', `生成速度 ${textVal}${grade ? ` (${grade})` : ''}`);
+      }
+    }
+  }
+
+  /**
    * 刷新页面上全部输入框底栏中的 W / H 额度双圆环
    */
   function refreshAllFooterQuotaBadges() {
@@ -4024,6 +4236,7 @@
     if (!currentSettings.enabled) {
       if (hostEl) hostEl.remove();
       mountOrUpdateFooterQuota(footerEl, activeModelLabel);
+      mountOrUpdateFooterSpeed(footerEl, null);
       return false;
     }
 
@@ -4103,6 +4316,7 @@
     }
 
     mountOrUpdateFooterQuota(footerEl, activeModelLabel || usageData?.modelName || '');
+    mountOrUpdateFooterSpeed(footerEl, usageData);
 
     return true;
   }
@@ -4134,7 +4348,19 @@
           if (resp && resp.ok && resp.usage) {
             const respCid = String(resp.usage.conversationId || '').trim();
             if (!respCid || respCid === activeCid) {
-              usageCache.set(activeCid, resp.usage);
+              let mergedUsage = resp.usage;
+              if (!mergedUsage.speed) {
+                const prev = usageCache.get(activeCid);
+                const seed = window.__CONTEXT_RING_SEED_USAGE__;
+                const fallbackSpeed =
+                  prev?.speed ||
+                  (seed && seed.conversationId === activeCid ? seed.speed : null) ||
+                  null;
+                if (fallbackSpeed) {
+                  mergedUsage = Object.assign({}, mergedUsage, { speed: fallbackSpeed });
+                }
+              }
+              usageCache.set(activeCid, mergedUsage);
             }
             if (resp.settings) {
               currentSettings = Object.assign({}, currentSettings, resp.settings, {
@@ -4260,7 +4486,8 @@
         target.closest?.(`#${SETTINGS_MODAL_ID}`) ||
         target.closest?.(`#${POPOVER_ID}`) ||
         target.closest?.(`.${HOST_CLASS}`) ||
-        target.closest?.(`.${QUOTA_HOST_CLASS}`)
+        target.closest?.(`.${QUOTA_HOST_CLASS}`) ||
+        target.closest?.(`.${SPEED_HOST_CLASS}`)
       ) {
         return false;
       }
@@ -4330,6 +4557,9 @@
         el.remove();
       }
       for (const el of Array.from(document.body.getElementsByClassName(QUOTA_HOST_CLASS))) {
+        el.remove();
+      }
+      for (const el of Array.from(document.body.getElementsByClassName(SPEED_HOST_CLASS))) {
         el.remove();
       }
     }
