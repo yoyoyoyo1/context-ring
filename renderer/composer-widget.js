@@ -1812,7 +1812,7 @@
   }
 
   /**
-   * 在双圆环正上方秒出展示该模型的周额度与 5 小时额度明细气泡
+   * 悬停模型名称时秒出展示周额度与 5 小时额度明细气泡（下拉项优先靠左防遮挡，按钮默认居中在上方）
    */
   function showQuotaTip(anchorEl, familyName) {
     const pair = resolveQuotaPairForFamily(familyName);
@@ -1846,11 +1846,21 @@
     const rect = anchorEl.getBoundingClientRect();
     const tipW = tip.offsetWidth || 180;
     const tipH = tip.offsetHeight || 46;
-    let left = rect.left + rect.width / 2 - tipW / 2;
-    left = Math.max(8, Math.min(window.innerWidth - tipW - 8, left));
-    let top = rect.top - tipH - 7;
-    if (top < 8) {
-      top = rect.bottom + 7;
+    const isMenuOption = anchorEl.classList.contains('cr-model-option');
+
+    let left;
+    let top;
+    if (isMenuOption && rect.left - tipW - 10 >= 8) {
+      // 下拉列表中优先贴齐该行左侧弹出，避免遮挡上下相邻的模型名称
+      left = rect.left - tipW - 10;
+      top = Math.max(8, Math.min(window.innerHeight - tipH - 8, rect.top + rect.height / 2 - tipH / 2));
+    } else {
+      left = rect.left + rect.width / 2 - tipW / 2;
+      left = Math.max(8, Math.min(window.innerWidth - tipW - 8, left));
+      top = rect.top - tipH - 7;
+      if (top < 8) {
+        top = rect.bottom + 7;
+      }
     }
     tip.style.left = `${Math.round(left)}px`;
     tip.style.top = `${Math.round(top)}px`;
@@ -2279,11 +2289,8 @@
 
     const currentQuota = buildQuotaPairVisual(controller.family, 15, dark);
     const currentQuotaSlot = pop.querySelector('[data-role="current-model-quota"]');
-    if (currentQuotaSlot) {
-      currentQuotaSlot.setAttribute('data-quota-family', controller.family);
-      if (currentQuotaSlot.innerHTML !== currentQuota.html) {
-        currentQuotaSlot.innerHTML = currentQuota.html;
-      }
+    if (currentQuotaSlot && currentQuotaSlot.innerHTML !== currentQuota.html) {
+      currentQuotaSlot.innerHTML = currentQuota.html;
     }
 
     const pickerBtn = pop.querySelector('[data-role="model-picker-btn"]');
@@ -2291,6 +2298,7 @@
       const canSwitchModel = controller.families.length > 1;
       pickerBtn.classList.toggle('is-static', !canSwitchModel);
       pickerBtn.disabled = !canSwitchModel;
+      pickerBtn.setAttribute('data-quota-family', controller.family);
       pickerBtn.removeAttribute('title');
       pickerBtn.setAttribute(
         'aria-label',
@@ -2298,7 +2306,7 @@
       );
     }
 
-    // 增量渲染去重后的模型系列列表（左侧 W / 5 双圆环展示周额度与 5h 额度）
+    // 增量渲染去重后的模型系列列表（整行悬停即可秒出周/5h额度气泡）
     const menuEl = pop.querySelector('[data-role="model-menu"]');
     if (menuEl) {
       const familiesSig = [
@@ -2320,9 +2328,9 @@
               const safeFamily = escapeHtml(item.family);
               const qVis = buildQuotaPairVisual(item.family, 16, dark);
               return `
-                <button type="button" class="cr-model-option" role="option" data-family="${safeFamily}">
+                <button type="button" class="cr-model-option" role="option" data-family="${safeFamily}" data-quota-family="${safeFamily}">
                   <span class="cr-model-option-left">
-                    <span class="cr-quota-pair" data-quota-family="${safeFamily}">${qVis.html}</span>
+                    <span class="cr-quota-pair">${qVis.html}</span>
                     <span class="cr-model-option-name">${safeFamily}</span>
                   </span>
                   <span class="cr-model-option-right">
@@ -2522,17 +2530,22 @@
       }
     });
 
-    // 悬停任意模型双圆环时秒出迷你数值气泡（含周额度与 5h 额度百分比与重置倒计时）
+    // 悬停当前模型按钮或下拉列表任意一行模型名时秒出迷你额度气泡
     pop.addEventListener('mouseover', (e) => {
-      const pairEl = e.target.closest?.('.cr-quota-pair[data-quota-family]');
-      if (!pairEl) return;
-      const familyName = pairEl.getAttribute('data-quota-family');
-      if (familyName) showQuotaTip(pairEl, familyName);
+      const targetEl = e.target.closest?.('[data-quota-family]');
+      if (!targetEl) return;
+      // 展开模型菜单时悬停底部触发按钮不重复弹气泡，避免遮挡展开中的菜单
+      if (targetEl.getAttribute('data-role') === 'model-picker-btn') {
+        const menu = pop.querySelector('[data-role="model-menu"]');
+        if (menu?.classList.contains('is-open')) return;
+      }
+      const familyName = targetEl.getAttribute('data-quota-family');
+      if (familyName) showQuotaTip(targetEl, familyName);
     });
     pop.addEventListener('mouseout', (e) => {
-      const pairEl = e.target.closest?.('.cr-quota-pair[data-quota-family]');
-      if (!pairEl) return;
-      if (e.relatedTarget && pairEl.contains(e.relatedTarget)) return;
+      const targetEl = e.target.closest?.('[data-quota-family]');
+      if (!targetEl) return;
+      if (e.relatedTarget && targetEl.contains(e.relatedTarget)) return;
       hideQuotaTip();
     });
 
@@ -2554,6 +2567,7 @@
     // 模型系列切换按钮：展开/收起去重模型系列浮层
     pop.querySelector('[data-role="model-picker-btn"]').addEventListener('click', (e) => {
       e.stopPropagation();
+      hideQuotaTip();
       toggleModelMenu(pop);
     });
 
