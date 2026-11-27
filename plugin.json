@@ -1,0 +1,12 @@
+{
+  "name": "context-ring",
+  "displayName": "Context Ring (上下文多形态监控)",
+  "version": "1.0.0",
+  "description": "零侵入挂载于 Antigravity 输入框底栏的上下文监控组件：支持极简细环、甜甜圈、毛毛虫、玻璃水瓶装水与液态胶囊 5 种形态自由切换，提供缓存命中明细、512k/1M 切换、一键 /compact 及右侧实时监控面板。",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "打开 Context Ring 实时监控与样式定制面板",
+    "查看当前会话的上下文 Token 占用与缓存命中率",
+    "把输入框上下文组件切换成玻璃水瓶或毛毛虫样式"
+  ]
+}

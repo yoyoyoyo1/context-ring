@@ -1,0 +1,23 @@
+{
+  "command": "node",
+  "args": [
+    "main.mjs"
+  ],
+  "restart_policy": "always",
+  "display_name": "Context Ring 监控工坊",
+  "description": "零侵入实时监控 Antigravity 上下文窗口占用与缓存命中率，支持细环、甜甜圈、毛毛虫、玻璃水瓶装水与液态胶囊多形态切换。",
+  "has_web_ui": true,
+  "agent_permissions": {
+    "allows_user_interactions": false
+  },
+  "ui_config": {
+    "display_name": "Context Ring 监控工坊",
+    "views": [
+      {
+        "path": "/ui.html",
+        "entrypoint": "SIDECAR_UI_ENTRYPOINT_AUX_PANE",
+        "title": "Context Ring (上下文工坊)"
+      }
+    ]
+  }
+}
