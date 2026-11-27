@@ -254,6 +254,10 @@ test('cdp-host & dashboard-ui: 目标识别、注入脚本语法合法性与工�
   assert.equal(injectedSource.includes('data-role="palette-row"'), false);
   assert.ok(injectedSource.includes('open-settings-btn'));
   assert.ok(injectedSource.includes('effort-rail'));
+  assert.ok(injectedSource.includes('model-picker-btn'));
+  assert.ok(injectedSource.includes('model-menu'));
+  assert.ok(injectedSource.includes('pickBestOptionForFamily'));
+  assert.ok(injectedSource.includes('commitModelFamilySelection'));
   assert.ok(injectedSource.includes('cr-gauge-track'));
   assert.ok(injectedSource.includes('agy-context-ring-settings-modal'));
   assert.ok(injectedSource.includes('getComposerCompactController'));

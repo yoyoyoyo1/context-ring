@@ -352,7 +352,7 @@
         background: var(--card, #ffffff);
         color: var(--foreground, #0a0a0c);
         box-shadow: 0 0 0 1px rgba(10, 10, 12, 0.08), 0 12px 28px -4px rgba(10, 10, 12, 0.12), 0 2px 6px rgba(10, 10, 12, 0.04);
-        contain: layout style paint;
+        contain: layout style;
         font-family: "Google Sans Flex", "Google Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
         font-size: 12px;
         opacity: 0;
@@ -523,14 +523,176 @@
         font-size: 11px;
         font-weight: 600;
         color: var(--muted-foreground, #71717a);
+        flex-shrink: 0;
       }
-      .cr-effort-model {
-        max-width: 165px;
+      /* 右侧按系列去重的紧凑模型切换器 */
+      .cr-model-picker {
+        position: relative;
+        max-width: 184px;
+        min-width: 0;
+      }
+      .cr-effort-model-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        max-width: 100%;
+        padding: 2px 6px 2px 7px;
+        border: 1px solid transparent;
+        border-radius: 7px;
+        background: transparent;
+        color: var(--muted-foreground, #71717a);
+        font-family: inherit;
+        font-size: 10.5px;
+        font-weight: 500;
+        line-height: 1.35;
+        cursor: pointer;
+        transition: color 0.14s ease, background-color 0.14s ease, border-color 0.14s ease;
+      }
+      .cr-effort-model-btn:hover,
+      .cr-effort-model-btn.is-open {
+        color: var(--foreground, #0a0a0c);
+        background: var(--secondary, rgba(10, 10, 12, 0.055));
+        border-color: rgba(10, 10, 12, 0.08);
+      }
+      #${POPOVER_ID}.is-dark .cr-effort-model-btn:hover,
+      #${POPOVER_ID}.is-dark .cr-effort-model-btn.is-open {
+        color: #f4f4f5;
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(255, 255, 255, 0.11);
+      }
+      .cr-effort-model-btn.is-static {
+        cursor: default;
+        padding-right: 4px;
+      }
+      .cr-effort-model-btn.is-static:hover {
+        color: var(--muted-foreground, #71717a);
+        background: transparent;
+        border-color: transparent;
+      }
+      .cr-effort-model-btn.is-static .cr-model-caret {
+        display: none;
+      }
+      .cr-model-btn-label {
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        font-size: 10.5px;
+      }
+      .cr-model-caret {
+        width: 10px;
+        height: 10px;
+        flex-shrink: 0;
+        opacity: 0.72;
+        transition: transform 0.16s ease, opacity 0.14s ease;
+      }
+      .cr-effort-model-btn.is-open .cr-model-caret {
+        transform: rotate(180deg);
+        opacity: 1;
+      }
+      /* 模型系列下拉浮层（默认向上展开避免触碰窗口底边） */
+      .cr-model-menu {
+        position: absolute;
+        right: 0;
+        bottom: calc(100% + 6px);
+        z-index: 30;
+        width: 218px;
+        max-height: 236px;
+        overflow-y: auto;
+        padding: 4px;
+        border-radius: 12px;
+        background: var(--card, #ffffff);
+        color: var(--foreground, #0a0a0c);
+        box-shadow: 0 0 0 1px rgba(10, 10, 12, 0.09), 0 12px 26px -4px rgba(10, 10, 12, 0.16), 0 2px 6px rgba(10, 10, 12, 0.06);
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(4px) scale(0.985);
+        transition: opacity 0.12s ease, transform 0.14s cubic-bezier(0.16, 1, 0.3, 1);
+        scrollbar-width: thin;
+      }
+      .cr-model-menu.is-down {
+        top: calc(100% + 6px);
+        bottom: auto;
+        transform: translateY(-4px) scale(0.985);
+      }
+      .cr-model-menu.is-open {
+        opacity: 1;
+        pointer-events: auto;
+        transform: translateY(0) scale(1);
+      }
+      #${POPOVER_ID}.is-dark .cr-model-menu {
+        background: var(--card, #1d2028);
+        color: #f4f4f5;
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.11), 0 16px 34px rgba(0, 0, 0, 0.56);
+      }
+      .cr-model-menu::-webkit-scrollbar {
+        width: 5px;
+      }
+      .cr-model-menu::-webkit-scrollbar-thumb {
+        border-radius: 999px;
+        background: rgba(113, 113, 122, 0.28);
+      }
+      .cr-model-option {
+        width: 100%;
+        border: none;
+        border-radius: 8px;
+        background: transparent;
+        color: inherit;
+        font-family: inherit;
+        font-size: 11.5px;
+        font-weight: 500;
+        padding: 6px 8px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        text-align: left;
+        cursor: pointer;
+        transition: background-color 0.12s ease, color 0.12s ease;
+      }
+      .cr-model-option:hover {
+        background: var(--muted, rgba(10, 10, 12, 0.055));
+      }
+      #${POPOVER_ID}.is-dark .cr-model-option:hover {
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .cr-model-option.is-active {
+        background: rgba(47, 117, 195, 0.11);
+        color: var(--primary, #2f75c3);
+        font-weight: 650;
+      }
+      #${POPOVER_ID}.is-dark .cr-model-option.is-active {
+        background: rgba(96, 165, 250, 0.16);
+        color: #93c5fd;
+      }
+      .cr-model-option-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+      }
+      .cr-model-option-right {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        flex-shrink: 0;
+      }
+      .cr-model-option-meta {
+        font-size: 10px;
+        font-weight: 500;
         color: var(--muted-foreground, #71717a);
+        opacity: 0.85;
+      }
+      .cr-model-option.is-active .cr-model-option-meta {
+        color: inherit;
+        opacity: 0.8;
+      }
+      .cr-model-option-check {
+        width: 12px;
+        height: 12px;
+        opacity: 0;
+        flex-shrink: 0;
+      }
+      .cr-model-option.is-active .cr-model-option-check {
+        opacity: 1;
       }
       .cr-effort-rail {
         position: relative;
@@ -1168,21 +1330,35 @@
   }
 
   /**
-   * 解析模型名称中的系列名与思考等级后缀（例如 "Gemini 4 Neon (XHigh)"）
+   * 对插入 HTML 的纯文本做安全转义，避免特殊模型名称破坏 DOM 结构
+   */
+  function escapeHtml(text) {
+    return String(text ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  /**
+   * 解析模型名称中的系列名与思考等级后缀（仅识别标准思考等级，保留 Orchestrator (Neon) 等独立变体名）
    */
   function parseModelFamilyAndEffort(label) {
     const raw = String(label || '').trim();
     const match = raw.match(/^(.*?)\s*\(([^()]+)\)\s*$/);
-    if (!match) {
-      return { family: raw, effortKey: '', meta: null };
+    if (match) {
+      const effortKey = match[2].trim().toLowerCase();
+      const meta = EFFORT_META[effortKey] || null;
+      if (meta) {
+        return { family: match[1].trim(), effortKey, meta };
+      }
     }
-    const family = match[1].trim();
-    const effortKey = match[2].trim().toLowerCase();
-    return { family, effortKey, meta: EFFORT_META[effortKey] || null };
+    return { family: raw, effortKey: '', meta: null };
   }
 
   /**
-   * 从当前输入框的模型选择器 React Fiber 读取可用思考等级列表与原生切换回调
+   * 从当前输入框的模型选择器 React Fiber 读取去重模型系列、思考等级列表与原生切换回调
    */
   function getThinkingEffortController(footerEl) {
     const card = footerEl?.closest?.('.surface-composer-card');
@@ -1205,13 +1381,27 @@
         const selectedInfo = parseModelFamilyAndEffort(selected?.label || '');
         if (!selectedInfo.family) return null;
 
-        const levelMap = new Map();
+        // 按原生出现顺序聚合去重模型系列，并整理每个系列下的思考等级档位
+        const familyMap = new Map();
         for (const opt of props.modelOptions) {
           if (!opt || opt.disabled) continue;
           const info = parseModelFamilyAndEffort(opt.label);
-          if (info.family === selectedInfo.family && info.meta) {
-            if (!levelMap.has(info.meta.rank)) {
-              levelMap.set(info.meta.rank, {
+          if (!info.family) continue;
+
+          let entry = familyMap.get(info.family);
+          if (!entry) {
+            entry = {
+              family: info.family,
+              levelMap: new Map(),
+              defaultOption: opt,
+              tagTitle: opt.tagTitle || '',
+            };
+            familyMap.set(info.family, entry);
+          }
+
+          if (info.meta) {
+            if (!entry.levelMap.has(info.meta.rank)) {
+              entry.levelMap.set(info.meta.rank, {
                 rank: info.meta.rank,
                 short: info.meta.short,
                 display: info.meta.display,
@@ -1220,10 +1410,20 @@
                 option: opt,
               });
             }
+          } else {
+            entry.defaultOption = opt;
           }
         }
 
-        const levels = Array.from(levelMap.values()).sort((a, b) => a.rank - b.rank);
+        const families = Array.from(familyMap.values()).map((entry) => ({
+          family: entry.family,
+          levels: Array.from(entry.levelMap.values()).sort((a, b) => a.rank - b.rank),
+          defaultOption: entry.defaultOption,
+          tagTitle: entry.tagTitle,
+        }));
+
+        const currentFamilyEntry = families.find((item) => item.family === selectedInfo.family) || null;
+        const levels = currentFamilyEntry ? currentFamilyEntry.levels : [];
         const currentIdx = levels.findIndex(
           (item) =>
             (selected?.value !== undefined && item.option.value === selected.value) ||
@@ -1233,8 +1433,10 @@
         return {
           family: selectedInfo.family,
           selectedLabel: selected?.label || '',
+          currentRank: selectedInfo.meta ? selectedInfo.meta.rank : null,
           levels,
           currentIdx: currentIdx >= 0 ? currentIdx : 0,
+          families,
           setSelectedModel: props.setSelectedModel,
         };
       }
@@ -1242,6 +1444,40 @@
       depth++;
     }
     return null;
+  }
+
+  /**
+   * 切换模型系列时挑选最匹配的思考深度档位（优先同档位，次选最接近档位，无分级则返回默认项）
+   */
+  function pickBestOptionForFamily(targetFamily, preferredRank) {
+    if (!targetFamily) return null;
+    const levels = targetFamily.levels || [];
+    if (levels.length === 0) {
+      return targetFamily.defaultOption || null;
+    }
+
+    if (typeof preferredRank === 'number') {
+      const exact = levels.find((item) => item.rank === preferredRank);
+      if (exact) return exact.option;
+
+      // 优先选择与当前思考深度最接近的档位（同距离优先偏高档位）
+      let best = levels[0];
+      let bestDist = Math.abs(best.rank - preferredRank);
+      for (let i = 1; i < levels.length; i++) {
+        const dist = Math.abs(levels[i].rank - preferredRank);
+        if (dist < bestDist || (dist === bestDist && levels[i].rank > best.rank)) {
+          best = levels[i];
+          bestDist = dist;
+        }
+      }
+      return best.option;
+    }
+
+    const medium = levels.find((item) => item.rank === 2);
+    if (medium) return medium.option;
+    const high = levels.find((item) => item.rank === 3);
+    if (high) return high.option;
+    return levels[0].option;
   }
 
   let compactSubmitting = false;
@@ -1440,7 +1676,65 @@
   }
 
   /**
-   * 渲染悬浮卡片中的融合式思考深度滑轨
+   * 关闭悬浮卡片内的模型系列下拉菜单
+   */
+  function closeModelMenu(pop) {
+    if (!pop) return;
+    const btn = pop.querySelector('[data-role="model-picker-btn"]');
+    const menu = pop.querySelector('[data-role="model-menu"]');
+    if (btn) {
+      btn.classList.remove('is-open');
+      btn.setAttribute('aria-expanded', 'false');
+    }
+    if (menu) {
+      menu.classList.remove('is-open');
+    }
+  }
+
+  /**
+   * 打开悬浮卡片内的模型系列下拉菜单，并按视口剩余空间自动选择向上或向下展开
+   */
+  function openModelMenu(pop) {
+    if (!pop) return;
+    const box = pop.querySelector('[data-role="effort-box"]');
+    const controller = box?._effortController;
+    if (!controller || controller.families.length <= 1) return;
+
+    const btn = pop.querySelector('[data-role="model-picker-btn"]');
+    const menu = pop.querySelector('[data-role="model-menu"]');
+    if (!btn || !menu) return;
+
+    // 展开菜单期间锁定悬浮卡片，避免光标移动触发卡片自动收起
+    popoverPinned = true;
+    const rect = btn.getBoundingClientRect();
+    const shouldOpenDown = rect.top < 252 && window.innerHeight - rect.bottom > rect.top;
+    menu.classList.toggle('is-down', shouldOpenDown);
+
+    btn.classList.add('is-open');
+    btn.setAttribute('aria-expanded', 'true');
+    menu.classList.add('is-open');
+
+    const activeOpt = menu.querySelector('.cr-model-option.is-active');
+    if (activeOpt) {
+      activeOpt.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  /**
+   * 切换模型系列下拉菜单的展开/收起状态
+   */
+  function toggleModelMenu(pop) {
+    if (!pop) return;
+    const menu = pop.querySelector('[data-role="model-menu"]');
+    if (menu?.classList.contains('is-open')) {
+      closeModelMenu(pop);
+    } else {
+      openModelMenu(pop);
+    }
+  }
+
+  /**
+   * 渲染悬浮卡片中的模型切换器与融合式思考深度滑轨
    */
   function renderThinkingEffortControl(pop, footerEl) {
     const box = pop.querySelector('[data-role="effort-box"]');
@@ -1449,18 +1743,73 @@
     const controller = getThinkingEffortController(footerEl);
     box._effortController = controller;
 
-    if (!controller || controller.levels.length === 0) {
+    if (!controller || controller.families.length === 0) {
+      closeModelMenu(pop);
       box.style.display = 'none';
       return;
     }
 
     box.style.display = '';
+    const hasLevels = controller.levels.length > 0;
     const isSingle = controller.levels.length < 2;
-    const rail = pop.querySelector('[data-role="effort-rail"]');
-    rail.classList.toggle('is-single', isSingle);
+
+    const captionEl = pop.querySelector('[data-role="effort-caption"]');
+    if (captionEl) captionEl.textContent = hasLevels ? '思考深度' : '当前模型';
 
     const modelEl = pop.querySelector('[data-role="effort-model"]');
     if (modelEl) modelEl.textContent = controller.family;
+
+    const pickerBtn = pop.querySelector('[data-role="model-picker-btn"]');
+    if (pickerBtn) {
+      const canSwitchModel = controller.families.length > 1;
+      pickerBtn.classList.toggle('is-static', !canSwitchModel);
+      pickerBtn.disabled = !canSwitchModel;
+      pickerBtn.title = canSwitchModel
+        ? `当前模型：${controller.selectedLabel || controller.family}（点击切换模型系列）`
+        : controller.selectedLabel || controller.family;
+    }
+
+    // 增量渲染去重后的模型系列列表，仅在列表结构变化时重建 DOM，保持滚动条稳定
+    const menuEl = pop.querySelector('[data-role="model-menu"]');
+    if (menuEl) {
+      const familiesSig = controller.families.map((f) => `${f.family}:${f.levels.length}`).join('|');
+      if (menuEl.dataset.sig !== familiesSig) {
+        menuEl.dataset.sig = familiesSig;
+        menuEl.innerHTML = controller.families
+          .map((item) => {
+            const levelHint = item.levels.length > 1 ? `${item.levels.length}档` : '';
+            const safeFamily = escapeHtml(item.family);
+            return `
+              <button type="button" class="cr-model-option" role="option" data-family="${safeFamily}">
+                <span class="cr-model-option-name">${safeFamily}</span>
+                <span class="cr-model-option-right">
+                  ${levelHint ? `<span class="cr-model-option-meta">${levelHint}</span>` : ''}
+                  <svg class="cr-model-option-check" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M2.5 6.2L5 8.6L9.5 3.6" />
+                  </svg>
+                </span>
+              </button>
+            `;
+          })
+          .join('');
+      }
+      for (const optBtn of menuEl.querySelectorAll('.cr-model-option')) {
+        const isActive = optBtn.getAttribute('data-family') === controller.family;
+        optBtn.classList.toggle('is-active', isActive);
+        optBtn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+      }
+    }
+
+    const rail = pop.querySelector('[data-role="effort-rail"]');
+    if (!hasLevels) {
+      if (rail) rail.style.display = 'none';
+      return;
+    }
+
+    if (rail) {
+      rail.style.display = '';
+      rail.classList.toggle('is-single', isSingle);
+    }
 
     const gridEl = pop.querySelector('[data-role="effort-grid"]');
     const sig = controller.levels.map((l) => l.short).join('|');
@@ -1476,6 +1825,34 @@
     }
 
     updateEffortSliderVisual(pop, controller.levels, controller.currentIdx);
+  }
+
+  /**
+   * 执行原生模型系列切换（自动匹配最接近思考等级）并刷新卡片显示
+   */
+  function commitModelFamilySelection(pop, targetFamilyName) {
+    const box = pop.querySelector('[data-role="effort-box"]');
+    const controller = box?._effortController;
+    closeModelMenu(pop);
+    if (!controller || !targetFamilyName) return;
+    if (targetFamilyName === controller.family) return;
+
+    const targetFamily = controller.families.find((item) => item.family === targetFamilyName);
+    const pickedOption = pickBestOptionForFamily(targetFamily, controller.currentRank);
+    if (!pickedOption) return;
+
+    try {
+      controller.setSelectedModel(pickedOption);
+      lastPopoverFingerprint = '';
+      setTimeout(() => {
+        if (activeFooterEl) renderPopoverData(activeFooterEl, true);
+      }, 90);
+      setTimeout(() => {
+        if (activeFooterEl) renderPopoverData(activeFooterEl, true);
+      }, 240);
+    } catch {
+      // 忽略模型切换异常
+    }
   }
 
   /**
@@ -1554,8 +1931,16 @@
 
       <div class="cr-effort-box" data-role="effort-box">
         <div class="cr-effort-head">
-          <span class="cr-effort-caption">思考深度</span>
-          <span class="cr-effort-model" data-role="effort-model">Model</span>
+          <span class="cr-effort-caption" data-role="effort-caption">思考深度</span>
+          <div class="cr-model-picker" data-role="model-picker">
+            <button type="button" class="cr-effort-model-btn" data-role="model-picker-btn" aria-haspopup="listbox" aria-expanded="false" title="点击切换模型系列">
+              <span class="cr-model-btn-label" data-role="effort-model">Model</span>
+              <svg class="cr-model-caret" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 4.5L6 7.5L9 4.5" />
+              </svg>
+            </button>
+            <div class="cr-model-menu" data-role="model-menu" role="listbox" aria-label="选择模型系列"></div>
+          </div>
         </div>
         <div class="cr-effort-rail" data-role="effort-rail">
           <div class="cr-effort-energy" data-role="effort-energy"></div>
@@ -1592,12 +1977,35 @@
       }
     });
 
+    // 点击卡片内部非模型选择器区域时，自动收起展开的模型系列下拉菜单
+    pop.addEventListener('pointerdown', (e) => {
+      if (!e.target.closest('[data-role="model-picker"]')) {
+        closeModelMenu(pop);
+      }
+    });
+
     // 右上角设置按钮：关闭小卡片并打开专属样式设置页面
     pop.querySelector('[data-role="open-settings-btn"]').addEventListener('click', (e) => {
       e.stopPropagation();
       lastOpenedFooterEl = activeFooterEl || lastOpenedFooterEl;
       closePopoverNow();
       openSettingsPage();
+    });
+
+    // 模型系列切换按钮：展开/收起去重模型系列浮层
+    pop.querySelector('[data-role="model-picker-btn"]').addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleModelMenu(pop);
+    });
+
+    // 模型系列列表项点击：切换模型系列并智能匹配最接近思考深度
+    pop.querySelector('[data-role="model-menu"]').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const optionBtn = e.target.closest('.cr-model-option');
+      if (!optionBtn) return;
+      const familyName = optionBtn.getAttribute('data-family');
+      if (!familyName) return;
+      commitModelFamilySelection(pop, familyName);
     });
 
     // 融合式磁吸思考深度滑轨：同时支持点击任意档位与水平滑动拖拽
@@ -2069,7 +2477,10 @@
     }
     popoverPinned = false;
     const pop = document.getElementById(POPOVER_ID);
-    if (pop) pop.classList.remove('is-open');
+    if (pop) {
+      closeModelMenu(pop);
+      pop.classList.remove('is-open');
+    }
     for (const btn of document.getElementsByClassName('cr-trigger-btn')) {
       btn.classList.remove('is-open');
     }
@@ -2237,11 +2648,17 @@
     closePopoverNow();
   }
 
-  // 按 Esc 快速退出设置页或悬浮卡片
+  // 按 Esc 快速退出设置页、模型下拉菜单或悬浮卡片
   function onDocumentKeyDown(e) {
     if (e.key !== 'Escape') return;
     if (isSettingsModalOpen()) {
       closeSettingsPage();
+      return;
+    }
+    const pop = document.getElementById(POPOVER_ID);
+    const modelMenu = pop?.querySelector('[data-role="model-menu"]');
+    if (modelMenu?.classList.contains('is-open')) {
+      closeModelMenu(pop);
       return;
     }
     if (activeFooterEl) {
