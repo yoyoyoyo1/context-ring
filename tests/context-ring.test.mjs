@@ -250,6 +250,11 @@ test('cdp-host & dashboard-ui: 目标识别、注入脚本语法合法性与工�
   const injectedSource = buildInjectedSource(DEFAULT_SETTINGS, '1.0.0');
   assert.doesNotThrow(() => new Function(injectedSource));
   assert.equal(injectedSource.includes('document.querySelectorAll ='), false);
+  // 校验悬浮卡片已移除形状选择条，改用右上角设置按钮 + 思考等级星云滑块 + 独立设置页面
+  assert.equal(injectedSource.includes('cr-style-strip'), false);
+  assert.ok(injectedSource.includes('open-settings-btn'));
+  assert.ok(injectedSource.includes('effort-track'));
+  assert.ok(injectedSource.includes('agy-context-ring-settings-modal'));
 
   const html = renderSidecarDashboardHtml({ version: '1.0.0' });
   for (const mode of STYLE_MODES) {

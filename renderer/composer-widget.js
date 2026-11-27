@@ -4,8 +4,8 @@
  * 特点：
  * 1. 零 DOM 原型污染（不修改 document.querySelectorAll），与其他插件安全共存；
  * 2. 通过 CDP Runtime.addBinding ('__contextRingHost') 零端口获取实时会话数据与同步设置；
- * 3. 内置 5 种可切换形态：ring（细环）、donut（甜甜圈）、caterpillar（毛毛虫）、bottle（玻璃水瓶装水）、capsule（液态胶囊）；
- * 4. 内置悬停/点击详情浮窗：支持查看缓存命中率、切换形态、切换 256k/512k/1M 上限及一键复制 /compact。
+ * 3. 悬浮卡片内置「思考等级星云滑块」，真实联动 Antigravity 当前模型的 Low/Medium/High/XHigh 思考等级；
+ * 4. 悬浮卡片右上角提供「设置」按钮，点击打开专属样式与监控设置页面，自由定制 5 种形态、配色、上限与挂载位置。
  */
 (function installContextRingWidget() {
   const WIDGET_VERSION = window.__CONTEXT_RING_EXPECTED_VERSION__ || '1.0.0';
@@ -36,14 +36,22 @@
 
   const STYLE_TAG_ID = 'agy-context-ring-styles';
   const POPOVER_ID = 'agy-context-ring-popover';
+  const SETTINGS_MODAL_ID = 'agy-context-ring-settings-modal';
   const HOST_CLASS = 'agy-context-ring-host';
 
   const STYLE_OPTIONS = [
-    { id: 'ring', label: '细环' },
-    { id: 'donut', label: '甜甜圈' },
-    { id: 'caterpillar', label: '毛毛虫' },
-    { id: 'bottle', label: '玻璃瓶' },
-    { id: 'capsule', label: '胶囊' },
+    { id: 'bottle', label: '玻璃瓶装水', desc: '双层波浪液面与上升气泡' },
+    { id: 'caterpillar', label: '盘圈毛毛虫', desc: '圆珠身体沿圆环爬行生长' },
+    { id: 'donut', label: '双层甜甜圈', desc: '外圈占用进度 + 内圈缓存率' },
+    { id: 'ring', label: '极简细环', desc: '清爽细圆环 + 呼吸光点' },
+    { id: 'capsule', label: '液态胶囊', desc: '横向玻璃胶囊高光液柱' },
+  ];
+
+  const PALETTE_OPTIONS = [
+    { id: 'auto', label: '自动告警', dots: ['#10b981', '#f59e0b', '#ef4444'] },
+    { id: 'ocean', label: '极光冰蓝', dots: ['#0ea5e9', '#38bdf8'] },
+    { id: 'emerald', label: '翡翠森林', dots: ['#10b981', '#2dd4bf'] },
+    { id: 'sunset', label: '霓虹落日', dots: ['#8b5cf6', '#ec4899'] },
   ];
 
   const LIMIT_OPTIONS = [
@@ -51,6 +59,18 @@
     { value: 512000, label: '512k' },
     { value: 1000000, label: '1M' },
   ];
+
+  // 标准思考等级排序与星云主题色映射
+  const EFFORT_META = {
+    minimal: { rank: 0, short: 'Min', display: 'Minimal', color: '#38bdf8', gradient: 'linear-gradient(90deg, #0284c7, #38bdf8)' },
+    low: { rank: 1, short: 'Low', display: 'Low', color: '#0ea5e9', gradient: 'linear-gradient(90deg, #0284c7, #0ea5e9, #38bdf8)' },
+    medium: { rank: 2, short: 'Med', display: 'Medium', color: '#3b82f6', gradient: 'linear-gradient(90deg, #1d4ed8, #3b82f6, #60a5fa)' },
+    high: { rank: 3, short: 'High', display: 'High', color: '#6366f1', gradient: 'linear-gradient(90deg, #1d4ed8, #4f46e5, #818cf8)' },
+    xhigh: { rank: 4, short: 'XHigh', display: 'XHigh', color: '#8b5cf6', gradient: 'linear-gradient(90deg, #1d4ed8, #6366f1, #8b5cf6)' },
+    'extra high': { rank: 4, short: 'XHigh', display: 'XHigh', color: '#8b5cf6', gradient: 'linear-gradient(90deg, #1d4ed8, #6366f1, #8b5cf6)' },
+    max: { rank: 5, short: 'Max', display: 'Max', color: '#9333ea', gradient: 'linear-gradient(90deg, #2563eb, #7c3aed, #a855f7)' },
+    ultra: { rank: 6, short: 'Ultra', display: 'Ultra', color: '#a855f7', gradient: 'linear-gradient(90deg, #2563eb, #7c3aed, #c084fc)' },
+  };
 
   // 当前运行态配置与会话统计缓存
   let currentSettings = Object.assign(
@@ -72,9 +92,11 @@
   let uidCounter = 0;
 
   let activeFooterEl = null;
+  let lastOpenedFooterEl = null;
   let popoverPinned = false;
   let hidePopoverTimer = null;
   let lastPopoverFingerprint = '';
+  let settingsPreviewPct = null;
 
   /**
    * 接收来自 Node 侧 CDP 宿主的 RPC 响应
@@ -97,6 +119,9 @@
     syncAllComposerFooters(false);
     if (activeFooterEl) {
       renderPopoverData(activeFooterEl, true);
+    }
+    if (isSettingsModalOpen()) {
+      renderSettingsPageContent();
     }
   };
 
@@ -124,6 +149,22 @@
         resolve({ ok: false, error: 'rpc-send-failed' });
       }
     });
+  }
+
+  /**
+   * 统一更新本地设置并异步持久化到 settings.json
+   */
+  function applySettingPatch(patch) {
+    currentSettings = Object.assign({}, currentSettings, patch);
+    lastPopoverFingerprint = '';
+    syncAllComposerFooters(false);
+    if (activeFooterEl) {
+      renderPopoverData(activeFooterEl, true);
+    }
+    if (isSettingsModalOpen()) {
+      renderSettingsPageContent();
+    }
+    void callHostRpc('settings.set', { patch });
   }
 
   /**
@@ -203,7 +244,7 @@
   }
 
   /**
-   * 注入组件与详情浮窗所需的全部样式与动画关键帧
+   * 注入组件、悬浮卡片（含星云思考滑块）及独立设置页面的全部样式
    */
   function ensureStylesInjected() {
     if (document.getElementById(STYLE_TAG_ID)) return;
@@ -234,25 +275,17 @@
         line-height: 1;
         cursor: pointer;
         outline: none;
-        transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease, transform 0.12s ease;
+        transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease;
       }
       .cr-trigger-btn:hover,
       .cr-trigger-btn.is-open {
         background: var(--secondary, rgba(148, 163, 184, 0.14));
         color: var(--foreground, #0f172a);
       }
-      .cr-trigger-btn[data-level="warn"] .cr-pct-text {
-        color: #d97706;
-      }
-      .dark .cr-trigger-btn[data-level="warn"] .cr-pct-text {
-        color: #fbbf24;
-      }
-      .cr-trigger-btn[data-level="danger"] .cr-pct-text {
-        color: #dc2626;
-      }
-      .dark .cr-trigger-btn[data-level="danger"] .cr-pct-text {
-        color: #f87171;
-      }
+      .cr-trigger-btn[data-level="warn"] .cr-pct-text { color: #d97706; }
+      .dark .cr-trigger-btn[data-level="warn"] .cr-pct-text { color: #fbbf24; }
+      .cr-trigger-btn[data-level="danger"] .cr-pct-text { color: #dc2626; }
+      .dark .cr-trigger-btn[data-level="danger"] .cr-pct-text { color: #f87171; }
       .cr-graphic-slot {
         display: inline-flex;
         align-items: center;
@@ -264,12 +297,8 @@
         letter-spacing: -0.02em;
       }
       @container input-footer (max-width: 430px) {
-        .cr-pct-text {
-          display: none !important;
-        }
-        .cr-trigger-btn {
-          padding: 0 5px;
-        }
+        .cr-pct-text { display: none !important; }
+        .cr-trigger-btn { padding: 0 5px; }
       }
 
       /* 玻璃水瓶波浪与气泡动画 */
@@ -292,19 +321,16 @@
         0%, 100% { opacity: 0.72; transform: scale(0.95); }
         50% { opacity: 1; transform: scale(1.12); }
       }
+      /* 星云滑块微星闪烁 */
+      @keyframes cr-star-twinkle {
+        0%, 100% { opacity: 0.45; transform: scale(0.85); }
+        50% { opacity: 1; transform: scale(1.15); }
+      }
 
-      .cr-anim-on .cr-wave-front {
-        animation: cr-wave-shift 2.2s linear infinite;
-      }
-      .cr-anim-on .cr-wave-back {
-        animation: cr-wave-shift 3.4s linear infinite reverse;
-      }
-      .cr-anim-on .cr-bubble-1 {
-        animation: cr-bubble-up 2.4s ease-in infinite;
-      }
-      .cr-anim-on .cr-bubble-2 {
-        animation: cr-bubble-up 2.9s ease-in 1.1s infinite;
-      }
+      .cr-anim-on .cr-wave-front { animation: cr-wave-shift 2.2s linear infinite; }
+      .cr-anim-on .cr-wave-back { animation: cr-wave-shift 3.4s linear infinite reverse; }
+      .cr-anim-on .cr-bubble-1 { animation: cr-bubble-up 2.4s ease-in infinite; }
+      .cr-anim-on .cr-bubble-2 { animation: cr-bubble-up 2.9s ease-in 1.1s infinite; }
       .cr-anim-on .cr-bug-seg {
         transform-box: fill-box;
         transform-origin: center;
@@ -321,14 +347,14 @@
         left: 0;
         top: 0;
         z-index: 99995;
-        width: 288px;
+        width: 292px;
         padding: 12px 13px;
-        border-radius: 14px;
+        border-radius: 15px;
         border: 1px solid rgba(148, 163, 184, 0.24);
         background: rgba(255, 255, 255, 0.97);
         color: #0f172a;
         box-shadow: 0 14px 34px rgba(15, 23, 42, 0.14), 0 3px 10px rgba(15, 23, 42, 0.06);
-        backdrop-filter: blur(14px);
+        backdrop-filter: blur(16px);
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
         font-size: 12px;
         opacity: 0;
@@ -349,8 +375,9 @@
       }
       .cr-pop-head {
         display: flex;
-        align-items: baseline;
+        align-items: center;
         justify-content: space-between;
+        gap: 8px;
         margin-bottom: 4px;
       }
       .cr-pop-title {
@@ -358,10 +385,35 @@
         font-weight: 700;
         letter-spacing: -0.01em;
       }
+      .cr-pop-head-right {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
       .cr-pop-pct {
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        font-size: 15px;
+        font-size: 14.5px;
         font-weight: 700;
+      }
+      .cr-open-settings-btn {
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        border: 1px solid transparent;
+        border-radius: 7px;
+        background: transparent;
+        color: inherit;
+        opacity: 0.68;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: opacity 0.15s ease, background-color 0.15s ease, transform 0.2s ease;
+      }
+      .cr-open-settings-btn:hover {
+        opacity: 1;
+        background: rgba(148, 163, 184, 0.18);
+        transform: rotate(28deg);
       }
       .cr-pop-sub {
         display: flex;
@@ -370,10 +422,10 @@
         gap: 8px;
         font-size: 11px;
         opacity: 0.78;
-        margin-bottom: 9px;
+        margin-bottom: 8px;
       }
       .cr-pop-model {
-        max-width: 132px;
+        max-width: 138px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -389,7 +441,7 @@
         border-radius: 999px;
         overflow: hidden;
         background: rgba(148, 163, 184, 0.2);
-        margin-bottom: 10px;
+        margin-bottom: 9px;
       }
       .cr-seg-cache { background: #10b981; transition: width 0.28s ease; }
       .cr-seg-input { background: #0ea5e9; transition: width 0.28s ease; }
@@ -398,54 +450,134 @@
         display: grid;
         grid-template-columns: 10px 1fr auto;
         align-items: center;
-        row-gap: 5px;
+        row-gap: 4px;
         column-gap: 6px;
         font-size: 11.5px;
         margin-bottom: 10px;
       }
-      .cr-dot {
-        width: 7px;
-        height: 7px;
-        border-radius: 999px;
-      }
+      .cr-dot { width: 7px; height: 7px; border-radius: 999px; }
       .cr-row-val {
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         font-size: 11px;
         font-weight: 600;
       }
-      .cr-style-strip {
-        display: grid;
-        grid-template-columns: repeat(5, 1fr);
-        gap: 3px;
-        padding: 3px;
-        border-radius: 9px;
-        background: rgba(148, 163, 184, 0.13);
-        margin-bottom: 8px;
+
+      /* 思考等级星云滑块区块 */
+      .cr-effort-box {
+        padding: 8px 10px 7px;
+        border-radius: 12px;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        background: rgba(248, 250, 252, 0.78);
+        margin-bottom: 9px;
       }
-      .cr-style-btn {
+      #${POPOVER_ID}.is-dark .cr-effort-box {
+        border-color: rgba(148, 163, 184, 0.16);
+        background: rgba(15, 23, 42, 0.56);
+      }
+      .cr-effort-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 7px;
+      }
+      .cr-effort-caption {
+        font-size: 10.5px;
+        opacity: 0.72;
+      }
+      .cr-effort-level-name {
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: -0.01em;
+        color: #8b5cf6;
+        transition: color 0.18s ease;
+      }
+      .cr-effort-track {
+        position: relative;
+        height: 20px;
+        border-radius: 999px;
+        background: rgba(148, 163, 184, 0.22);
+        cursor: pointer;
+        touch-action: none;
+        display: flex;
+        align-items: center;
+      }
+      #${POPOVER_ID}.is-dark .cr-effort-track {
+        background: rgba(148, 163, 184, 0.16);
+      }
+      .cr-effort-track.is-single {
+        cursor: default;
+        opacity: 0.78;
+      }
+      .cr-effort-fill {
+        position: relative;
+        height: 100%;
+        min-width: 20px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #1d4ed8, #6366f1, #8b5cf6);
+        overflow: hidden;
+        transition: width 0.16s cubic-bezier(0.22, 1, 0.36, 1), background 0.2s ease;
+      }
+      .cr-effort-track.is-dragging .cr-effort-fill,
+      .cr-effort-track.is-dragging .cr-effort-thumb {
+        transition: none;
+      }
+      .cr-effort-stars {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background-image:
+          radial-gradient(circle 1.2px at 14% 38%, rgba(255, 255, 255, 0.92), transparent 100%),
+          radial-gradient(circle 0.9px at 26% 68%, rgba(255, 255, 255, 0.72), transparent 100%),
+          radial-gradient(circle 1.3px at 42% 46%, rgba(255, 255, 255, 0.9), transparent 100%),
+          radial-gradient(circle 1.0px at 56% 70%, rgba(255, 255, 255, 0.8), transparent 100%),
+          radial-gradient(circle 1.2px at 72% 34%, rgba(255, 255, 255, 0.88), transparent 100%),
+          radial-gradient(circle 0.9px at 84% 62%, rgba(255, 255, 255, 0.78), transparent 100%);
+        animation: cr-star-twinkle 2.8s ease-in-out infinite;
+      }
+      .cr-effort-thumb {
+        position: absolute;
+        top: 50%;
+        width: 20px;
+        height: 20px;
+        border-radius: 999px;
+        background: #ffffff;
+        border: 1.5px solid rgba(148, 163, 184, 0.32);
+        box-shadow: 0 2px 6px rgba(15, 23, 42, 0.22);
+        transform: translate(-100%, -50%);
+        pointer-events: none;
+        transition: left 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      .cr-effort-ticks {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-top: 5px;
+        gap: 2px;
+      }
+      .cr-effort-tick {
         border: none;
         background: transparent;
         color: inherit;
-        opacity: 0.72;
-        font-size: 10.5px;
+        opacity: 0.52;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 10px;
         font-weight: 600;
-        padding: 4px 2px;
-        border-radius: 6px;
+        padding: 1px 4px;
+        border-radius: 5px;
         cursor: pointer;
-        transition: background-color 0.14s ease, opacity 0.14s ease;
+        transition: opacity 0.14s ease, color 0.14s ease, background-color 0.14s ease;
       }
-      .cr-style-btn:hover {
+      .cr-effort-tick:hover { opacity: 0.92; }
+      .cr-effort-tick.is-active {
         opacity: 1;
+        color: #7c3aed;
+        background: rgba(139, 92, 246, 0.13);
       }
-      .cr-style-btn.is-active {
-        opacity: 1;
-        background: rgba(14, 165, 233, 0.18);
-        color: #0284c7;
+      #${POPOVER_ID}.is-dark .cr-effort-tick.is-active {
+        color: #c4b5fd;
+        background: rgba(139, 92, 246, 0.24);
       }
-      #${POPOVER_ID}.is-dark .cr-style-btn.is-active {
-        background: rgba(56, 189, 248, 0.22);
-        color: #7dd3fc;
-      }
+
       .cr-pop-foot {
         display: flex;
         align-items: center;
@@ -495,14 +627,258 @@
       .cr-compact-btn:hover {
         background: rgba(148, 163, 184, 0.16);
       }
+
+      /* 独立样式与监控设置页面（全屏原生风格视图） */
+      #${SETTINGS_MODAL_ID} {
+        position: fixed;
+        inset: 0;
+        z-index: 99998;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: rgba(15, 23, 42, 0.36);
+        backdrop-filter: blur(8px);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      #${SETTINGS_MODAL_ID}.is-open {
+        display: flex;
+      }
+      .cr-page-shell {
+        width: min(760px, 100%);
+        max-height: min(86vh, 720px);
+        overflow-y: auto;
+        border-radius: 18px;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        background: #f8fafc;
+        color: #0f172a;
+        box-shadow: 0 24px 64px rgba(15, 23, 42, 0.24);
+        padding: 20px 22px 22px;
+      }
+      #${SETTINGS_MODAL_ID}.is-dark .cr-page-shell {
+        border-color: rgba(148, 163, 184, 0.18);
+        background: #121721;
+        color: #f1f5f9;
+        box-shadow: 0 28px 72px rgba(0, 0, 0, 0.62);
+      }
+      .cr-page-topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding-bottom: 14px;
+        margin-bottom: 16px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+      }
+      .cr-page-title-wrap {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+      }
+      .cr-page-title {
+        font-size: 16px;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+      }
+      .cr-page-badge {
+        font-size: 11px;
+        font-weight: 600;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: rgba(14, 165, 233, 0.14);
+        color: #0284c7;
+      }
+      #${SETTINGS_MODAL_ID}.is-dark .cr-page-badge {
+        background: rgba(56, 189, 248, 0.18);
+        color: #7dd3fc;
+      }
+      .cr-page-close-btn {
+        border: 1px solid rgba(148, 163, 184, 0.28);
+        background: transparent;
+        color: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 5px 12px;
+        border-radius: 9px;
+        cursor: pointer;
+        transition: background-color 0.15s ease;
+      }
+      .cr-page-close-btn:hover {
+        background: rgba(148, 163, 184, 0.16);
+      }
+      .cr-page-sec {
+        background: #ffffff;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        border-radius: 14px;
+        padding: 15px 16px;
+        margin-bottom: 14px;
+      }
+      #${SETTINGS_MODAL_ID}.is-dark .cr-page-sec {
+        background: #18202c;
+        border-color: rgba(148, 163, 184, 0.14);
+      }
+      .cr-page-sec-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-bottom: 12px;
+      }
+      .cr-page-sec-title {
+        font-size: 13.5px;
+        font-weight: 700;
+      }
+      .cr-preview-ctrl {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 11.5px;
+        opacity: 0.85;
+      }
+      .cr-preview-ctrl input[type="range"] {
+        width: 110px;
+        accent-color: #0ea5e9;
+        cursor: pointer;
+      }
+      .cr-shape-grid {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 10px;
+      }
+      @media (max-width: 680px) {
+        .cr-shape-grid {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+      }
+      .cr-shape-card {
+        position: relative;
+        border: 1.5px solid rgba(148, 163, 184, 0.24);
+        background: rgba(248, 250, 252, 0.65);
+        color: inherit;
+        border-radius: 13px;
+        padding: 13px 8px 11px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 7px;
+        cursor: pointer;
+        text-align: center;
+        transition: border-color 0.16s ease, background-color 0.16s ease, transform 0.14s ease;
+      }
+      #${SETTINGS_MODAL_ID}.is-dark .cr-shape-card {
+        background: rgba(15, 23, 42, 0.45);
+        border-color: rgba(148, 163, 184, 0.16);
+      }
+      .cr-shape-card:hover {
+        border-color: #0ea5e9;
+        transform: translateY(-1px);
+      }
+      .cr-shape-card.is-active {
+        border-color: #0ea5e9;
+        background: rgba(14, 165, 233, 0.1);
+        box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.16);
+      }
+      .cr-shape-preview {
+        width: 54px;
+        height: 54px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .cr-shape-name {
+        font-size: 12.5px;
+        font-weight: 700;
+      }
+      .cr-shape-desc {
+        font-size: 10.5px;
+        opacity: 0.68;
+        line-height: 1.3;
+      }
+      .cr-pref-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 10px;
+        padding: 9px 0;
+        border-top: 1px solid rgba(148, 163, 184, 0.15);
+      }
+      .cr-pref-row:first-of-type {
+        border-top: none;
+        padding-top: 2px;
+      }
+      .cr-pref-label {
+        font-size: 12.5px;
+        font-weight: 600;
+      }
+      .cr-pill-row {
+        display: inline-flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .cr-page-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        border: 1px solid rgba(148, 163, 184, 0.28);
+        background: transparent;
+        color: inherit;
+        font-size: 11.5px;
+        font-weight: 600;
+        padding: 5px 11px;
+        border-radius: 999px;
+        cursor: pointer;
+        transition: border-color 0.14s ease, background-color 0.14s ease;
+      }
+      .cr-page-pill:hover {
+        border-color: #0ea5e9;
+      }
+      .cr-page-pill.is-active {
+        border-color: #0ea5e9;
+        background: rgba(14, 165, 233, 0.15);
+        color: #0284c7;
+      }
+      #${SETTINGS_MODAL_ID}.is-dark .cr-page-pill.is-active {
+        color: #7dd3fc;
+      }
+      .cr-swatch-dots {
+        display: inline-flex;
+        gap: 2px;
+      }
+      .cr-swatch-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+      }
+      .cr-trend-bars {
+        display: flex;
+        align-items: flex-end;
+        gap: 4px;
+        height: 70px;
+        padding-top: 6px;
+      }
+      .cr-trend-col {
+        flex: 1;
+        min-width: 4px;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        border-radius: 3px;
+        overflow: hidden;
+        background: rgba(148, 163, 184, 0.12);
+      }
+      .cr-trend-in { background: #0ea5e9; }
+      .cr-trend-ca { background: #10b981; }
     `;
     document.head.appendChild(styleEl);
   }
 
   /**
-   * 渲染 5 种形态的矢量 SVG 图形字符串
+   * 渲染 5 种形态的矢量 SVG（支持传入 size 控制底栏小图标或设置页大号预览）
    */
-  function buildShapeSvg(styleMode, pct, cacheHitRate, colors, uid) {
+  function buildShapeSvg(styleMode, pct, cacheHitRate, colors, uid, size = 20) {
     const clamped = Math.max(0, Math.min(100, pct));
     const dark = isDarkTheme();
     const trackStroke = dark ? 'rgba(148, 163, 184, 0.25)' : 'rgba(100, 116, 139, 0.22)';
@@ -513,7 +889,7 @@
       const c = 2 * Math.PI * r;
       const offset = c * (1 - clamped / 100);
       return `
-        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+        <svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" aria-hidden="true">
           <circle cx="9" cy="9" r="${r}" stroke="${trackStroke}" stroke-width="1.9"/>
           <circle cx="9" cy="9" r="${r}" stroke="${colors.main}" stroke-width="2.1"
             stroke-linecap="round" stroke-dasharray="${c.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}"
@@ -523,7 +899,7 @@
       `;
     }
 
-    // 2. 双层甜甜圈（Donut：外层总上下文糖霜 + 内层缓存命中率翠绿环）
+    // 2. 双层甜甜圈（Donut：外层总上下文 + 内层缓存命中率翠绿环）
     if (styleMode === 'donut') {
       const outerR = 6.3;
       const outerC = 2 * Math.PI * outerR;
@@ -533,7 +909,7 @@
       const cacheClamped = Math.max(0, Math.min(100, Number(cacheHitRate || 0)));
       const innerOff = innerC * (1 - cacheClamped / 100);
       return `
-        <svg width="19" height="19" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <svg width="${size}" height="${size}" viewBox="0 0 20 20" fill="none" aria-hidden="true">
           <circle cx="10" cy="10" r="${outerR}" stroke="${trackStroke}" stroke-width="3.5"/>
           <circle cx="10" cy="10" r="${outerR}" stroke="${colors.main}" stroke-width="3.5"
             stroke-linecap="round" stroke-dasharray="${outerC.toFixed(2)}" stroke-dashoffset="${outerOff.toFixed(2)}"
@@ -557,7 +933,6 @@
       const sepStroke = dark ? '#181d27' : '#ffffff';
       const eyeColor = dark ? '#0f172a' : '#ffffff';
 
-      // 未走到的圆弧区域绘制轻柔圆点轨道，保持完整圆环视觉
       const trackDots = [];
       const slotCount = 10;
       for (let i = 0; i < slotCount; i++) {
@@ -570,7 +945,6 @@
         }
       }
 
-      // 从虫尾到虫颈依次叠画圆润身体节段（越靠近虫头越饱满）
       const bodyNodes = [];
       const usableArc = Math.max(0, sweep - 0.38);
       if (sweep > 0.28) {
@@ -595,7 +969,7 @@
       const headDeg = (headAngle * 180) / Math.PI + 90;
 
       return `
-        <svg width="20" height="20" viewBox="0 0 22 22" fill="none" aria-hidden="true">
+        <svg width="${size}" height="${size}" viewBox="0 0 22 22" fill="none" aria-hidden="true">
           ${trackDots.join('')}
           ${bodyNodes.join('')}
           <g transform="translate(${hx.toFixed(2)} ${hy.toFixed(2)}) rotate(${headDeg.toFixed(1)})">
@@ -610,10 +984,12 @@
 
     // 4. 胶囊液态条（Capsule）
     if (styleMode === 'capsule') {
+      const capW = Math.round(size * 1.4);
+      const capH = Math.round(size * 0.72);
       const innerWidth = Math.max(clamped > 0 ? 2.5 : 0, (24 * clamped) / 100);
       const clipId = `cr-cap-${uid}`;
       return `
-        <svg width="28" height="14" viewBox="0 0 28 14" fill="none" aria-hidden="true">
+        <svg width="${capW}" height="${capH}" viewBox="0 0 28 14" fill="none" aria-hidden="true">
           <defs>
             <clipPath id="${clipId}">
               <rect x="2" y="2.5" width="24" height="9" rx="4.5"/>
@@ -628,17 +1004,17 @@
       `;
     }
 
-    // 5. 默认经典款：玻璃水瓶装水（Bottle：透明瓶身 + 双层晃动波浪液面 + 上升小气泡 + 玻璃折射高光）
+    // 5. 默认经典款：玻璃水瓶装水（Bottle）
+    const btlW = Math.round(size * 0.9);
     const clipId = `cr-btl-${uid}`;
     const gradId = `cr-liq-${uid}`;
-    // 瓶内有效液面高度范围：y 从 17.5（空瓶）到 6.0（满瓶）
     const liquidTopY = 17.5 - (11.5 * clamped) / 100;
     const glassStroke = dark ? 'rgba(203, 213, 225, 0.52)' : 'rgba(71, 85, 105, 0.45)';
     const corkColor = dark ? '#d97706' : '#b45309';
     const showBubbles = clamped >= 10;
 
     return `
-      <svg width="18" height="20" viewBox="0 0 18 20" fill="none" aria-hidden="true">
+      <svg width="${btlW}" height="${size}" viewBox="0 0 18 20" fill="none" aria-hidden="true">
         <defs>
           <clipPath id="${clipId}">
             <rect x="3.1" y="5.8" width="11.8" height="12.0" rx="4.6"/>
@@ -648,10 +1024,8 @@
             <stop offset="100%" stop-color="${colors.main}"/>
           </linearGradient>
         </defs>
-        <!-- 软木瓶塞与瓶颈 -->
         <rect x="6.7" y="1.0" width="4.6" height="2.1" rx="0.8" fill="${corkColor}"/>
         <path d="M6.2 3.1 H11.8 V5.4 H6.2 Z" stroke="${glassStroke}" stroke-width="1.15" fill="rgba(148,163,184,0.08)"/>
-        <!-- 瓶内晃动液体与气泡 -->
         <g clip-path="url(#${clipId})">
           <rect x="3" y="5.6" width="12" height="12.5" fill="rgba(148, 163, 184, 0.08)"/>
           ${
@@ -673,11 +1047,87 @@
               : ''
           }
         </g>
-        <!-- 玻璃瓶外轮廓与左侧高光折射条 -->
         <rect x="2.6" y="5.3" width="12.8" height="13.0" rx="5.0" stroke="${glassStroke}" stroke-width="1.25"/>
         <path d="M5.0 7.6 C4.4 9.2 4.4 13.0 5.0 15.2" stroke="#ffffff" stroke-opacity="${dark ? '0.42' : '0.68'}" stroke-width="1.05" stroke-linecap="round"/>
       </svg>
     `;
+  }
+
+  /**
+   * 解析模型名称中的系列名与思考等级后缀（例如 "Gemini 4 Neon (XHigh)"）
+   */
+  function parseModelFamilyAndEffort(label) {
+    const raw = String(label || '').trim();
+    const match = raw.match(/^(.*?)\s*\(([^()]+)\)\s*$/);
+    if (!match) {
+      return { family: raw, effortKey: '', meta: null };
+    }
+    const family = match[1].trim();
+    const effortKey = match[2].trim().toLowerCase();
+    return { family, effortKey, meta: EFFORT_META[effortKey] || null };
+  }
+
+  /**
+   * 从当前输入框的模型选择器 React Fiber 读取可用思考等级列表与原生切换回调
+   */
+  function getThinkingEffortController(footerEl) {
+    const card = footerEl?.closest?.('.surface-composer-card');
+    const triggerBtn =
+      (card && card.querySelector('[data-testid="model-selector-trigger"]')) ||
+      document.querySelector('[data-testid="model-selector-trigger"]');
+    if (!triggerBtn) return null;
+
+    const fiberKey = Object.keys(triggerBtn).find(
+      (key) => key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$')
+    );
+    if (!fiberKey) return null;
+
+    let cursor = triggerBtn[fiberKey];
+    let depth = 0;
+    while (cursor && depth < 32) {
+      const props = cursor.memoizedProps;
+      if (props && typeof props.setSelectedModel === 'function' && Array.isArray(props.modelOptions)) {
+        const selected = props.selectedModel || null;
+        const selectedInfo = parseModelFamilyAndEffort(selected?.label || '');
+        if (!selectedInfo.family) return null;
+
+        const levelMap = new Map();
+        for (const opt of props.modelOptions) {
+          if (!opt || opt.disabled) continue;
+          const info = parseModelFamilyAndEffort(opt.label);
+          if (info.family === selectedInfo.family && info.meta) {
+            if (!levelMap.has(info.meta.rank)) {
+              levelMap.set(info.meta.rank, {
+                rank: info.meta.rank,
+                short: info.meta.short,
+                display: info.meta.display,
+                color: info.meta.color,
+                gradient: info.meta.gradient,
+                option: opt,
+              });
+            }
+          }
+        }
+
+        const levels = Array.from(levelMap.values()).sort((a, b) => a.rank - b.rank);
+        const currentIdx = levels.findIndex(
+          (item) =>
+            (selected?.value !== undefined && item.option.value === selected.value) ||
+            item.option.label === selected?.label
+        );
+
+        return {
+          family: selectedInfo.family,
+          selectedLabel: selected?.label || '',
+          levels,
+          currentIdx: currentIdx >= 0 ? currentIdx : 0,
+          setSelectedModel: props.setSelectedModel,
+        };
+      }
+      cursor = cursor.return;
+      depth++;
+    }
+    return null;
   }
 
   /**
@@ -715,15 +1165,11 @@
       }
     }
 
-    // URL 路径兜底提取 /c/<conversationId>
     if (!conversationId) {
       const pathMatch = String(location.pathname || '').match(/^\/c\/([a-zA-Z0-9_-]{8,128})/);
-      if (pathMatch) {
-        conversationId = pathMatch[1];
-      }
+      if (pathMatch) conversationId = pathMatch[1];
     }
 
-    // 模型触发器文本兜底
     if (!modelLabel && footerEl) {
       const card = footerEl.closest('.surface-composer-card');
       const modelBtn = card ? card.querySelector('[data-testid="model-selector-trigger"]') : null;
@@ -736,7 +1182,103 @@
   }
 
   /**
-   * 创建或获取全局唯一的悬浮详情卡片
+   * 更新悬浮卡片内思考等级滑块的视觉位置与高亮文案
+   */
+  function updateEffortSliderVisual(pop, levels, idx) {
+    const level = levels[idx] || levels[0];
+    if (!level) return;
+
+    const count = levels.length;
+    const ratio = count <= 1 ? 1 : idx / (count - 1);
+    const track = pop.querySelector('[data-role="effort-track"]');
+    const fill = pop.querySelector('[data-role="effort-fill"]');
+    const thumb = pop.querySelector('[data-role="effort-thumb"]');
+    const nameEl = pop.querySelector('[data-role="effort-name"]');
+
+    const trackWidth = track?.clientWidth || 242;
+    const thumbPx = 20;
+    const fillPx = Math.round(thumbPx + ratio * Math.max(0, trackWidth - thumbPx));
+
+    if (fill) {
+      fill.style.width = `${fillPx}px`;
+      fill.style.background = level.gradient;
+    }
+    if (thumb) {
+      thumb.style.left = `${fillPx}px`;
+    }
+    if (nameEl) {
+      nameEl.textContent = level.display;
+      nameEl.style.color = level.color;
+    }
+    for (const tickBtn of pop.querySelectorAll('.cr-effort-tick')) {
+      tickBtn.classList.toggle('is-active', Number(tickBtn.dataset.idx) === idx);
+    }
+  }
+
+  /**
+   * 渲染悬浮卡片中的思考等级滑块区域
+   */
+  function renderThinkingEffortControl(pop, footerEl) {
+    const box = pop.querySelector('[data-role="effort-box"]');
+    if (!box) return;
+
+    const controller = getThinkingEffortController(footerEl);
+    box._effortController = controller;
+
+    if (!controller || controller.levels.length === 0) {
+      box.style.display = 'none';
+      return;
+    }
+
+    box.style.display = '';
+    const isSingle = controller.levels.length < 2;
+    const track = pop.querySelector('[data-role="effort-track"]');
+    track.classList.toggle('is-single', isSingle);
+
+    const captionEl = pop.querySelector('[data-role="effort-caption"]');
+    captionEl.textContent = `思考等级 · ${controller.family}`;
+
+    const ticksEl = pop.querySelector('[data-role="effort-ticks"]');
+    const ticksSig = controller.levels.map((l) => l.short).join('|');
+    if (ticksEl.dataset.sig !== ticksSig) {
+      ticksEl.dataset.sig = ticksSig;
+      ticksEl.innerHTML = controller.levels
+        .map(
+          (item, idx) =>
+            `<button type="button" class="cr-effort-tick" data-idx="${idx}">${item.short}</button>`
+        )
+        .join('');
+    }
+
+    updateEffortSliderVisual(pop, controller.levels, controller.currentIdx);
+  }
+
+  /**
+   * 执行原生思考等级切换并刷新卡片显示
+   */
+  function commitThinkingEffortIndex(pop, targetIdx) {
+    const box = pop.querySelector('[data-role="effort-box"]');
+    const controller = box?._effortController;
+    if (!controller || !controller.levels[targetIdx]) return;
+
+    const picked = controller.levels[targetIdx];
+    updateEffortSliderVisual(pop, controller.levels, targetIdx);
+
+    if (targetIdx === controller.currentIdx) return;
+    try {
+      controller.setSelectedModel(picked.option);
+      controller.currentIdx = targetIdx;
+      lastPopoverFingerprint = '';
+      setTimeout(() => {
+        if (activeFooterEl) renderPopoverData(activeFooterEl, true);
+      }, 90);
+    } catch {
+      // 忽略模型切换异常
+    }
+  }
+
+  /**
+   * 创建或获取全局唯一的悬浮详情卡片（右上角含设置按钮，中部为思考等级滑块）
    */
   function getOrCreatePopover() {
     let pop = document.getElementById(POPOVER_ID);
@@ -747,8 +1289,16 @@
     pop.className = 'no-focus-agent-input';
     pop.innerHTML = `
       <div class="cr-pop-head">
-        <span class="cr-pop-title">Context Ring 上下文窗口</span>
-        <span class="cr-pop-pct" data-role="pct">0.0%</span>
+        <span class="cr-pop-title">上下文窗口</span>
+        <div class="cr-pop-head-right">
+          <span class="cr-pop-pct" data-role="pct">0.0%</span>
+          <button type="button" class="cr-open-settings-btn" data-role="open-settings-btn" title="打开样式与监控设置页面" aria-label="打开 Context Ring 设置">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3.2"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.08a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+          </button>
+        </div>
       </div>
       <div class="cr-pop-sub">
         <span data-role="summary">0 / 512k tokens</span>
@@ -776,8 +1326,18 @@
         <span>对话轮次 / 步数</span>
         <span class="cr-row-val" data-role="val-steps">0 轮 · 0 步</span>
       </div>
-      <div class="cr-style-strip" data-role="style-strip">
-        ${STYLE_OPTIONS.map((opt) => `<button type="button" class="cr-style-btn" data-style="${opt.id}">${opt.label}</button>`).join('')}
+      <div class="cr-effort-box" data-role="effort-box">
+        <div class="cr-effort-head">
+          <span class="cr-effort-caption" data-role="effort-caption">思考等级</span>
+          <span class="cr-effort-level-name" data-role="effort-name">--</span>
+        </div>
+        <div class="cr-effort-track" data-role="effort-track">
+          <div class="cr-effort-fill" data-role="effort-fill">
+            <div class="cr-effort-stars"></div>
+          </div>
+          <div class="cr-effort-thumb" data-role="effort-thumb"></div>
+        </div>
+        <div class="cr-effort-ticks" data-role="effort-ticks"></div>
       </div>
       <div class="cr-pop-foot">
         <div class="cr-limit-group" data-role="limit-group">
@@ -800,32 +1360,82 @@
       }
     });
 
-    // 在浮窗中一键切换 5 种视觉样式并同步持久化
-    pop.querySelector('[data-role="style-strip"]').addEventListener('click', (e) => {
+    // 右上角设置按钮：关闭小卡片并打开专属样式设置页面
+    pop.querySelector('[data-role="open-settings-btn"]').addEventListener('click', (e) => {
       e.stopPropagation();
-      const btn = e.target.closest('.cr-style-btn');
-      if (!btn) return;
-      const nextStyle = btn.getAttribute('data-style');
-      if (!nextStyle) return;
-      currentSettings = Object.assign({}, currentSettings, { styleMode: nextStyle });
-      lastPopoverFingerprint = '';
-      syncAllComposerFooters(false);
-      if (activeFooterEl) renderPopoverData(activeFooterEl, true);
-      void callHostRpc('settings.set', { patch: { styleMode: nextStyle } });
+      lastOpenedFooterEl = activeFooterEl || lastOpenedFooterEl;
+      closePopoverNow();
+      openSettingsPage();
     });
 
-    // 在浮窗中切换 256k / 512k / 1M 上限并同步持久化
+    // 思考等级滑块拖拽与点击定位
+    const effortTrack = pop.querySelector('[data-role="effort-track"]');
+    let draggingEffort = false;
+    let dragPickedIdx = 0;
+
+    function calcIdxFromClientX(clientX) {
+      const box = pop.querySelector('[data-role="effort-box"]');
+      const ctrl = box?._effortController;
+      if (!ctrl || ctrl.levels.length < 2) return 0;
+      const rect = effortTrack.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
+      return Math.round(ratio * (ctrl.levels.length - 1));
+    }
+
+    effortTrack.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      const box = pop.querySelector('[data-role="effort-box"]');
+      const ctrl = box?._effortController;
+      if (!ctrl || ctrl.levels.length < 2) return;
+      draggingEffort = true;
+      popoverPinned = true;
+      effortTrack.classList.add('is-dragging');
+      effortTrack.setPointerCapture?.(e.pointerId);
+      dragPickedIdx = calcIdxFromClientX(e.clientX);
+      updateEffortSliderVisual(pop, ctrl.levels, dragPickedIdx);
+    });
+
+    effortTrack.addEventListener('pointermove', (e) => {
+      if (!draggingEffort) return;
+      const box = pop.querySelector('[data-role="effort-box"]');
+      const ctrl = box?._effortController;
+      if (!ctrl || ctrl.levels.length < 2) return;
+      dragPickedIdx = calcIdxFromClientX(e.clientX);
+      updateEffortSliderVisual(pop, ctrl.levels, dragPickedIdx);
+    });
+
+    function finishEffortDrag(e) {
+      if (!draggingEffort) return;
+      draggingEffort = false;
+      effortTrack.classList.remove('is-dragging');
+      try {
+        effortTrack.releasePointerCapture?.(e.pointerId);
+      } catch {}
+      commitThinkingEffortIndex(pop, dragPickedIdx);
+    }
+
+    effortTrack.addEventListener('pointerup', finishEffortDrag);
+    effortTrack.addEventListener('pointercancel', finishEffortDrag);
+
+    // 点击底部刻度文字快捷切换思考等级
+    pop.querySelector('[data-role="effort-ticks"]').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const btn = e.target.closest('.cr-effort-tick');
+      if (!btn) return;
+      const idx = Number(btn.dataset.idx);
+      if (Number.isInteger(idx)) {
+        commitThinkingEffortIndex(pop, idx);
+      }
+    });
+
+    // 切换 256k / 512k / 1M 上限并同步持久化
     pop.querySelector('[data-role="limit-group"]').addEventListener('click', (e) => {
       e.stopPropagation();
       const btn = e.target.closest('.cr-limit-btn');
       if (!btn) return;
       const nextLimit = Number(btn.getAttribute('data-limit'));
       if (!nextLimit) return;
-      currentSettings = Object.assign({}, currentSettings, { contextLimit: nextLimit });
-      lastPopoverFingerprint = '';
-      syncAllComposerFooters(false);
-      if (activeFooterEl) renderPopoverData(activeFooterEl, true);
-      void callHostRpc('settings.set', { patch: { contextLimit: nextLimit } });
+      applySettingPatch({ contextLimit: nextLimit });
     });
 
     // 复制 /compact 指令
@@ -881,7 +1491,6 @@
       outTokens,
       cumOut,
       limit,
-      currentSettings.styleMode,
       currentSettings.palette,
       modelLabel || data.modelName,
       isDarkTheme() ? 1 : 0,
@@ -909,20 +1518,19 @@
       pop.querySelector('[data-role="val-output"]').textContent = `${formatCompactTokens(outTokens)} / ${formatCompactTokens(cumOut)}`;
       pop.querySelector('[data-role="val-steps"]').textContent = `${Number(data.turnCount || 0)} 轮 · ${Number(data.plannerStepCount || 0)} 步`;
 
-      for (const btn of pop.querySelectorAll('.cr-style-btn')) {
-        btn.classList.toggle('is-active', btn.getAttribute('data-style') === currentSettings.styleMode);
-      }
       for (const btn of pop.querySelectorAll('.cr-limit-btn')) {
         btn.classList.toggle('is-active', Number(btn.getAttribute('data-limit')) === limit);
       }
+
+      renderThinkingEffortControl(pop, footerEl);
     }
 
     // 紧贴触发按钮上方居中对齐，并做视口边界防溢出裁剪
     const hostEl = footerEl?.querySelector(`.${HOST_CLASS}`);
     if (hostEl) {
       const rect = hostEl.getBoundingClientRect();
-      const popWidth = 288;
-      const popHeight = pop.offsetHeight || 226;
+      const popWidth = 292;
+      const popHeight = pop.offsetHeight || 274;
       let left = rect.left + rect.width / 2 - popWidth / 2;
       left = Math.max(10, Math.min(window.innerWidth - popWidth - 10, left));
       let top = rect.top - popHeight - 8;
@@ -935,6 +1543,234 @@
   }
 
   /**
+   * 检查独立样式设置页面当前是否处于打开状态
+   */
+  function isSettingsModalOpen() {
+    const modal = document.getElementById(SETTINGS_MODAL_ID);
+    return Boolean(modal && modal.classList.contains('is-open'));
+  }
+
+  /**
+   * 创建或获取独立样式与监控设置页面视图
+   */
+  function getOrCreateSettingsModal() {
+    let modal = document.getElementById(SETTINGS_MODAL_ID);
+    if (modal) return modal;
+
+    modal = document.createElement('div');
+    modal.id = SETTINGS_MODAL_ID;
+    modal.className = 'no-focus-agent-input';
+    modal.innerHTML = `
+      <div class="cr-page-shell" role="dialog" aria-modal="true" aria-label="Context Ring 样式与监控设置">
+        <div class="cr-page-topbar">
+          <div class="cr-page-title-wrap">
+            <span class="cr-page-title">Context Ring 样式与设置</span>
+            <span class="cr-page-badge">v${WIDGET_VERSION}</span>
+          </div>
+          <button type="button" class="cr-page-close-btn" data-role="close-settings-btn">← 返回会话</button>
+        </div>
+
+        <div class="cr-page-sec">
+          <div class="cr-page-sec-head">
+            <span class="cr-page-sec-title">选择外观形状（点击即时同步到输入框）</span>
+            <div class="cr-preview-ctrl">
+              <span data-role="preview-pct-label">实时水位</span>
+              <input type="range" min="0" max="100" step="1" data-role="preview-range" />
+              <button type="button" class="cr-page-pill" data-role="preview-reset-btn" style="padding:2px 8px;font-size:10.5px;">实时</button>
+            </div>
+          </div>
+          <div class="cr-shape-grid" data-role="shape-grid"></div>
+        </div>
+
+        <div class="cr-page-sec">
+          <div class="cr-page-sec-head" style="margin-bottom:6px;">
+            <span class="cr-page-sec-title">配色与显示偏好</span>
+          </div>
+
+          <div class="cr-pref-row">
+            <span class="cr-pref-label">配色方案</span>
+            <div class="cr-pill-row" data-role="palette-row">
+              ${PALETTE_OPTIONS.map(
+                (p) => `
+                <button type="button" class="cr-page-pill" data-palette="${p.id}">
+                  <span class="cr-swatch-dots">${p.dots.map((d) => `<span class="cr-swatch-dot" style="background:${d}"></span>`).join('')}</span>
+                  <span>${p.label}</span>
+                </button>`
+              ).join('')}
+            </div>
+          </div>
+
+          <div class="cr-pref-row">
+            <span class="cr-pref-label">上下文窗口上限</span>
+            <div class="cr-pill-row" data-role="modal-limit-row">
+              ${LIMIT_OPTIONS.map((opt) => `<button type="button" class="cr-page-pill" data-limit="${opt.value}">${opt.label}</button>`).join('')}
+            </div>
+          </div>
+
+          <div class="cr-pref-row">
+            <span class="cr-pref-label">挂载位置与动效</span>
+            <div class="cr-pill-row">
+              <button type="button" class="cr-page-pill" data-role="modal-toggle-pct">显示百分比</button>
+              <button type="button" class="cr-page-pill" data-role="modal-toggle-anim">动态效果</button>
+              <button type="button" class="cr-page-pill" data-role="modal-toggle-place">输入框靠右</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="cr-page-sec" style="margin-bottom:0;">
+          <div class="cr-page-sec-head" style="margin-bottom:6px;">
+            <span class="cr-page-sec-title">当前会话近 30 步上下文趋势（绿=缓存 / 蓝=新增输入）</span>
+            <span style="font-size:11.5px;opacity:0.7;" data-role="modal-session-meta">--</span>
+          </div>
+          <div class="cr-trend-bars" data-role="modal-trend-bars"></div>
+        </div>
+      </div>
+    `;
+
+    // 点击遮罩或返回按钮关闭设置页
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        closeSettingsPage();
+      }
+    });
+    modal.querySelector('[data-role="close-settings-btn"]').addEventListener('click', () => {
+      closeSettingsPage();
+    });
+
+    // 选择 5 种形状
+    modal.querySelector('[data-role="shape-grid"]').addEventListener('click', (e) => {
+      const card = e.target.closest('.cr-shape-card');
+      if (!card) return;
+      const nextStyle = card.getAttribute('data-style');
+      if (nextStyle) applySettingPatch({ styleMode: nextStyle });
+    });
+
+    // 预览水位滑块（仅用于设置页预览测试，不影响真实统计）
+    modal.querySelector('[data-role="preview-range"]').addEventListener('input', (e) => {
+      settingsPreviewPct = Number(e.target.value);
+      renderSettingsPageContent();
+    });
+    modal.querySelector('[data-role="preview-reset-btn"]').addEventListener('click', () => {
+      settingsPreviewPct = null;
+      renderSettingsPageContent();
+    });
+
+    // 配色切换
+    modal.querySelector('[data-role="palette-row"]').addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-palette]');
+      if (btn) applySettingPatch({ palette: btn.getAttribute('data-palette') });
+    });
+
+    // 上限切换
+    modal.querySelector('[data-role="modal-limit-row"]').addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-limit]');
+      if (btn) applySettingPatch({ contextLimit: Number(btn.getAttribute('data-limit')) });
+    });
+
+    // 显示开关与位置切换
+    modal.querySelector('[data-role="modal-toggle-pct"]').addEventListener('click', () => {
+      applySettingPatch({ showPercentText: !currentSettings.showPercentText });
+    });
+    modal.querySelector('[data-role="modal-toggle-anim"]').addEventListener('click', () => {
+      applySettingPatch({ animateEffects: !currentSettings.animateEffects });
+    });
+    modal.querySelector('[data-role="modal-toggle-place"]').addEventListener('click', () => {
+      applySettingPatch({ placement: currentSettings.placement === 'left' ? 'right' : 'left' });
+    });
+
+    document.body.appendChild(modal);
+    return modal;
+  }
+
+  /**
+   * 渲染独立样式设置页面内的 5 种动态大号形状卡片与趋势图
+   */
+  function renderSettingsPageContent() {
+    const modal = getOrCreateSettingsModal();
+    modal.classList.toggle('is-dark', isDarkTheme());
+
+    const footerRef = lastOpenedFooterEl || document.body.getElementsByClassName('agy-composer-footer')[0] || null;
+    const { conversationId } = extractComposerContext(footerRef);
+    const data = usageCache.get(conversationId || '__empty__') || Array.from(usageCache.values())[0] || {};
+    const limit = Number(currentSettings.contextLimit || 512000);
+    const realPct = limit > 0 ? Math.min(100, (Number(data.totalTokens || 0) / limit) * 100) : 0;
+    const previewPct = settingsPreviewPct === null ? realPct : settingsPreviewPct;
+    const hitRate = Number(data.cacheHitRate || 88);
+    const colors = resolveThemeColors(previewPct);
+
+    const rangeEl = modal.querySelector('[data-role="preview-range"]');
+    rangeEl.value = String(Math.round(previewPct));
+    modal.querySelector('[data-role="preview-pct-label"]').textContent =
+      settingsPreviewPct === null ? `实时 ${realPct.toFixed(1)}%` : `预览 ${Math.round(previewPct)}%`;
+
+    const grid = modal.querySelector('[data-role="shape-grid"]');
+    grid.classList.toggle('cr-anim-on', Boolean(currentSettings.animateEffects));
+    grid.innerHTML = STYLE_OPTIONS.map((opt) => {
+      const isActive = opt.id === currentSettings.styleMode;
+      const svg = buildShapeSvg(opt.id, previewPct, hitRate, colors, `modal-${opt.id}`, 44);
+      return `
+        <button type="button" class="cr-shape-card ${isActive ? 'is-active' : ''}" data-style="${opt.id}">
+          <div class="cr-shape-preview">${svg}</div>
+          <div class="cr-shape-name">${opt.label}</div>
+          <div class="cr-shape-desc">${opt.desc}</div>
+        </button>
+      `;
+    }).join('');
+
+    for (const btn of modal.querySelectorAll('[data-palette]')) {
+      btn.classList.toggle('is-active', btn.getAttribute('data-palette') === currentSettings.palette);
+    }
+    for (const btn of modal.querySelectorAll('[data-role="modal-limit-row"] [data-limit]')) {
+      btn.classList.toggle('is-active', Number(btn.getAttribute('data-limit')) === limit);
+    }
+
+    const pctBtn = modal.querySelector('[data-role="modal-toggle-pct"]');
+    pctBtn.classList.toggle('is-active', Boolean(currentSettings.showPercentText));
+    pctBtn.textContent = currentSettings.showPercentText ? '显示百分比：开' : '显示百分比：关';
+
+    const animBtn = modal.querySelector('[data-role="modal-toggle-anim"]');
+    animBtn.classList.toggle('is-active', Boolean(currentSettings.animateEffects));
+    animBtn.textContent = currentSettings.animateEffects ? '动态效果：开' : '动态效果：关';
+
+    const placeBtn = modal.querySelector('[data-role="modal-toggle-place"]');
+    placeBtn.classList.toggle('is-active', true);
+    placeBtn.textContent = currentSettings.placement === 'left' ? '位置：输入框靠左' : '位置：输入框靠右';
+
+    modal.querySelector('[data-role="modal-session-meta"]').textContent =
+      `${formatCompactTokens(data.totalTokens || 0)} / ${formatCompactTokens(limit)} · 缓存命中 ${(data.cacheHitRate || 0).toFixed(1)}%`;
+
+    const hist = Array.isArray(data.history) ? data.history : [];
+    const maxStep = Math.max(limit * 0.25, ...hist.map((x) => Number(x.totalTokens || 0)), 1);
+    modal.querySelector('[data-role="modal-trend-bars"]').innerHTML = hist.length
+      ? hist
+          .map((step) => {
+            const caH = Math.max(2, Math.round(((step.cacheReadTokens || 0) / maxStep) * 62));
+            const inH = Math.max(1, Math.round(((step.inputTokens || 0) / maxStep) * 62));
+            return `<div class="cr-trend-col" title="步 #${step.step}: ${formatCompactTokens(step.totalTokens)}"><div class="cr-trend-in" style="height:${inH}px"></div><div class="cr-trend-ca" style="height:${caH}px"></div></div>`;
+          })
+          .join('')
+      : '<div style="opacity:0.6;font-size:12px;margin:auto;">暂无历史步数记录</div>';
+  }
+
+  /**
+   * 打开独立样式与监控设置页面
+   */
+  function openSettingsPage() {
+    settingsPreviewPct = null;
+    const modal = getOrCreateSettingsModal();
+    renderSettingsPageContent();
+    modal.classList.add('is-open');
+  }
+
+  /**
+   * 关闭独立样式与监控设置页面
+   */
+  function closeSettingsPage() {
+    const modal = document.getElementById(SETTINGS_MODAL_ID);
+    if (modal) modal.classList.remove('is-open');
+  }
+
+  /**
    * 展开指定输入框对应的详情卡片
    */
   function openPopover(footerEl, pinOpen) {
@@ -943,6 +1779,7 @@
       hidePopoverTimer = null;
     }
     activeFooterEl = footerEl;
+    lastOpenedFooterEl = footerEl;
     if (pinOpen) popoverPinned = true;
 
     const pop = getOrCreatePopover();
@@ -986,7 +1823,6 @@
   function mountOrUpdateFooter(footerEl, usageData) {
     let hostEl = footerEl.querySelector(`.${HOST_CLASS}`);
 
-    // 若插件被设置为禁用，移除已挂载节点
     if (!currentSettings.enabled) {
       if (hostEl) hostEl.remove();
       return false;
@@ -1022,7 +1858,6 @@
       });
     }
 
-    // 选择左侧或右侧工具容器挂载，避免打乱发送/录音按钮顺序
     const children = footerEl.children;
     const targetContainer =
       currentSettings.placement === 'left' && children[0]
@@ -1062,7 +1897,7 @@
       hostEl.dataset.renderSig = renderSig;
       const slot = btn.querySelector('.cr-graphic-slot');
       const pctText = btn.querySelector('.cr-pct-text');
-      slot.innerHTML = buildShapeSvg(currentSettings.styleMode, pct, hitRate, colors, uid);
+      slot.innerHTML = buildShapeSvg(currentSettings.styleMode, pct, hitRate, colors, uid, 20);
       pctText.textContent = pct >= 10 ? `${Math.round(pct)}%` : `${pct.toFixed(1)}%`;
       pctText.style.display = currentSettings.showPercentText ? '' : 'none';
     }
@@ -1120,6 +1955,9 @@
     if (activeFooterEl && document.body.contains(activeFooterEl)) {
       renderPopoverData(activeFooterEl, false);
     }
+    if (isSettingsModalOpen() && settingsPreviewPct === null) {
+      renderSettingsPageContent();
+    }
   }
 
   // 点击外部空白处关闭已固定的详情卡片
@@ -1130,9 +1968,21 @@
     closePopoverNow();
   }
 
-  document.addEventListener('pointerdown', onDocumentPointerDown);
+  // 按 Esc 快速退出设置页或悬浮卡片
+  function onDocumentKeyDown(e) {
+    if (e.key !== 'Escape') return;
+    if (isSettingsModalOpen()) {
+      closeSettingsPage();
+      return;
+    }
+    if (activeFooterEl) {
+      closePopoverNow();
+    }
+  }
 
-  // 监听会话切换或新建输入框 DOM 变动，防抖挂载
+  document.addEventListener('pointerdown', onDocumentPointerDown);
+  document.addEventListener('keydown', onDocumentKeyDown);
+
   let domSyncTimer = null;
   const domObserver = new MutationObserver(() => {
     if (domSyncTimer) return;
@@ -1146,7 +1996,6 @@
     domObserver.observe(document.body, { childList: true, subtree: true });
   }
 
-  // 定时向 Node 宿主同步最新 transcript 增量数据
   const pollInterval = setInterval(() => {
     void syncAllComposerFooters(true);
   }, 2600);
@@ -1162,12 +2011,14 @@
     if (hidePopoverTimer) clearTimeout(hidePopoverTimer);
     domObserver.disconnect();
     document.removeEventListener('pointerdown', onDocumentPointerDown);
+    document.removeEventListener('keydown', onDocumentKeyDown);
 
     for (const item of pendingRpc.values()) {
       clearTimeout(item.timer);
     }
     pendingRpc.clear();
 
+    document.getElementById(SETTINGS_MODAL_ID)?.remove();
     document.getElementById(POPOVER_ID)?.remove();
     document.getElementById(STYLE_TAG_ID)?.remove();
     if (document.body) {
