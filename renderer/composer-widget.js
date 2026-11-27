@@ -47,13 +47,6 @@
     { id: 'capsule', label: '液态胶囊', desc: '横向玻璃胶囊高光液柱' },
   ];
 
-  const PALETTE_OPTIONS = [
-    { id: 'auto', label: '自动告警', dots: ['#10b981', '#f59e0b', '#ef4444'] },
-    { id: 'ocean', label: '极光冰蓝', dots: ['#0ea5e9', '#38bdf8'] },
-    { id: 'emerald', label: '翡翠森林', dots: ['#10b981', '#2dd4bf'] },
-    { id: 'sunset', label: '霓虹落日', dots: ['#8b5cf6', '#ec4899'] },
-  ];
-
   const LIMIT_OPTIONS = [
     { value: 256000, label: '256k' },
     { value: 512000, label: '512k' },
@@ -214,33 +207,16 @@
   }
 
   /**
-   * 根据占用百分比与所选配色主题计算主色、辅色与告警等级
+   * 统一采用绿 / 琥珀 / 红三级自动语义告警配色（<60% 绿，60%-85% 琥珀，>=85% 红）
    */
   function resolveThemeColors(pct) {
-    const level = pct >= 85 ? 'danger' : pct >= 60 ? 'warn' : 'ok';
-
-    // 达到 90% 高危阈值时强制使用醒目红橙色提醒，防止爆窗
-    if (pct >= 90 || currentSettings.palette === 'auto') {
-      if (level === 'danger') {
-        return { main: '#ef4444', soft: '#fca5a5', deep: '#dc2626', level };
-      }
-      if (level === 'warn') {
-        return { main: '#f59e0b', soft: '#fcd34d', deep: '#d97706', level };
-      }
-      return { main: '#10b981', soft: '#6ee7b7', deep: '#059669', level };
+    if (pct >= 85) {
+      return { main: '#ef4444', soft: '#fca5a5', deep: '#dc2626', level: 'danger' };
     }
-
-    if (currentSettings.palette === 'ocean') {
-      return { main: '#0ea5e9', soft: '#7dd3fc', deep: '#0284c7', level };
+    if (pct >= 60) {
+      return { main: '#f59e0b', soft: '#fcd34d', deep: '#d97706', level: 'warn' };
     }
-    if (currentSettings.palette === 'emerald') {
-      return { main: '#10b981', soft: '#5eead4', deep: '#0d9488', level };
-    }
-    if (currentSettings.palette === 'sunset') {
-      return { main: '#8b5cf6', soft: '#f472b6', deep: '#db2777', level };
-    }
-
-    return { main: '#10b981', soft: '#6ee7b7', deep: '#059669', level };
+    return { main: '#10b981', soft: '#6ee7b7', deep: '#059669', level: 'ok' };
   }
 
   /**
@@ -1697,20 +1673,7 @@
 
         <div class="cr-page-sec">
           <div class="cr-page-sec-head" style="margin-bottom:6px;">
-            <span class="cr-page-sec-title">配色与显示偏好</span>
-          </div>
-
-          <div class="cr-pref-row">
-            <span class="cr-pref-label">配色方案</span>
-            <div class="cr-pill-row" data-role="palette-row">
-              ${PALETTE_OPTIONS.map(
-                (p) => `
-                <button type="button" class="cr-page-pill" data-palette="${p.id}">
-                  <span class="cr-swatch-dots">${p.dots.map((d) => `<span class="cr-swatch-dot" style="background:${d}"></span>`).join('')}</span>
-                  <span>${p.label}</span>
-                </button>`
-              ).join('')}
-            </div>
+            <span class="cr-page-sec-title">显示与挂载偏好</span>
           </div>
 
           <div class="cr-pref-row">
@@ -1770,12 +1733,6 @@
     modal.querySelector('[data-role="preview-reset-btn"]').addEventListener('click', () => {
       settingsPreviewPct = null;
       renderSettingsPageContent();
-    });
-
-    // 配色切换
-    modal.querySelector('[data-role="palette-row"]').addEventListener('click', (e) => {
-      const btn = e.target.closest('[data-palette]');
-      if (btn) applySettingPatch({ palette: btn.getAttribute('data-palette') });
     });
 
     // 上限切换
@@ -1845,9 +1802,6 @@
       }
     }
 
-    for (const btn of modal.querySelectorAll('[data-palette]')) {
-      btn.classList.toggle('is-active', btn.getAttribute('data-palette') === currentSettings.palette);
-    }
     for (const btn of modal.querySelectorAll('[data-role="modal-limit-row"] [data-limit]')) {
       btn.classList.toggle('is-active', Number(btn.getAttribute('data-limit')) === limit);
     }

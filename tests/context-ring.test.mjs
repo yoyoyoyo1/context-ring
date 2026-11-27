@@ -56,10 +56,9 @@ test('settings: 默认值校验、非法值兜底与原子持久化读写', asyn
       assert.equal(saved.styleMode, styleMode);
     }
 
-    // 验证配色与窗口上限
-    for (const palette of COLOR_PALETTES) {
-      assert.equal(store.set({ palette }).palette, palette);
-    }
+    // 验证配色固定为自动告警，任意传入配色均归一化为 auto
+    assert.deepEqual(COLOR_PALETTES, ['auto']);
+    assert.equal(store.set({ palette: 'ocean' }).palette, 'auto');
     for (const limit of CONTEXT_LIMITS) {
       assert.equal(store.set({ contextLimit: limit }).contextLimit, limit);
     }
@@ -250,14 +249,16 @@ test('cdp-host & dashboard-ui: 目标识别、注入脚本语法合法性与工�
   const injectedSource = buildInjectedSource(DEFAULT_SETTINGS, '1.0.0');
   assert.doesNotThrow(() => new Function(injectedSource));
   assert.equal(injectedSource.includes('document.querySelectorAll ='), false);
-  // 校验悬浮卡片已移除形状选择条，改用右上角设置按钮 + 融合式磁吸思考深度滑轨 + 独立设置页面
+  // 校验悬浮卡片已移除形状选择条，设置页与 Sidecar 已移除配色选择（统一自动告警）
   assert.equal(injectedSource.includes('cr-style-strip'), false);
+  assert.equal(injectedSource.includes('data-role="palette-row"'), false);
   assert.ok(injectedSource.includes('open-settings-btn'));
   assert.ok(injectedSource.includes('effort-rail'));
   assert.ok(injectedSource.includes('cr-gauge-track'));
   assert.ok(injectedSource.includes('agy-context-ring-settings-modal'));
 
   const html = renderSidecarDashboardHtml({ version: '1.0.0' });
+  assert.equal(html.includes('paletteGroup'), false);
   for (const mode of STYLE_MODES) {
     assert.ok(html.includes(`data-style="${mode}"`), `缺少样式按钮: ${mode}`);
   }

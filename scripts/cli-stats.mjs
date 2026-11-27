@@ -17,7 +17,7 @@ function runCli() {
   const paths = getPluginPaths();
   const settingsStore = createSettingsStore(paths.dataDir);
 
-  // 支持通过命令行快速修改样式/配色/上限：--style bottle --palette ocean --limit 1000000
+  // 支持通过命令行快速修改样式/上限：--style bottle --limit 1000000
   const patch = {};
   let conversationId = '';
 
@@ -25,8 +25,6 @@ function runCli() {
     const arg = args[i];
     if (arg === '--style' && args[i + 1]) {
       patch.styleMode = args[++i];
-    } else if (arg === '--palette' && args[i + 1]) {
-      patch.palette = args[++i];
     } else if (arg === '--limit' && args[i + 1]) {
       patch.contextLimit = Number(args[++i]);
     } else if (!arg.startsWith('--') && !conversationId) {
