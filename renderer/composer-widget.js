@@ -9,9 +9,11 @@
  */
 (function installContextRingWidget() {
   const WIDGET_VERSION = window.__CONTEXT_RING_EXPECTED_VERSION__ || '1.0.0';
+  const forceReload = Boolean(window.__CONTEXT_RING_FORCE_RELOAD__);
+  window.__CONTEXT_RING_FORCE_RELOAD__ = false;
 
   // 若同版本已安装且未要求重载，直接同步最新引导配置后退出
-  if (window.__CONTEXT_RING_INSTALLED__ && window.__CONTEXT_RING_VERSION__ === WIDGET_VERSION) {
+  if (!forceReload && window.__CONTEXT_RING_INSTALLED__ && window.__CONTEXT_RING_VERSION__ === WIDGET_VERSION) {
     if (window.__CONTEXT_RING_BOOT_SETTINGS__ && typeof window.__contextRingReceiveSettings === 'function') {
       window.__contextRingReceiveSettings(window.__CONTEXT_RING_BOOT_SETTINGS__);
     }
@@ -280,10 +282,10 @@
         25% { opacity: 0.85; }
         100% { transform: translateY(-7px) scale(1.1); opacity: 0; }
       }
-      /* 毛毛虫轻柔蠕动动画 */
-      @keyframes cr-bug-bob {
-        0%, 100% { transform: translateY(0); }
-        50% { transform: translateY(-1.4px); }
+      /* 环形毛毛虫节段呼吸蠕动动画 */
+      @keyframes cr-bug-pulse {
+        0%, 100% { transform: scale(0.93); }
+        50% { transform: scale(1.08); }
       }
       /* 中心呼吸光点 */
       @keyframes cr-core-pulse {
@@ -304,7 +306,9 @@
         animation: cr-bubble-up 2.9s ease-in 1.1s infinite;
       }
       .cr-anim-on .cr-bug-seg {
-        animation: cr-bug-bob 1.8s ease-in-out infinite;
+        transform-box: fill-box;
+        transform-origin: center;
+        animation: cr-bug-pulse 1.6s ease-in-out infinite;
       }
       .cr-anim-on .cr-ring-core {
         transform-origin: center;
@@ -542,34 +546,63 @@
       `;
     }
 
-    // 3. 扭动毛毛虫（Caterpillar：5 节身体随占用率逐节点亮 + 触角眨眼虫头）
+    // 3. 盘圈环形毛毛虫（Caterpillar：圆珠身体沿圆周逐节生长 + 触角眨眼虫头沿圆弧爬行）
     if (styleMode === 'caterpillar') {
-      const segments = [
-        { cx: 4.2, cy: 10.6, r: 2.3, delay: '0s' },
-        { cx: 8.5, cy: 9.2, r: 2.5, delay: '0.18s' },
-        { cx: 13.1, cy: 10.5, r: 2.6, delay: '0.36s' },
-        { cx: 17.9, cy: 9.1, r: 2.7, delay: '0.54s' },
-        { cx: 22.8, cy: 10.3, r: 2.8, delay: '0.72s' },
-      ];
-      const filledFloat = (clamped / 100) * segments.length;
-      const segNodes = segments
-        .map((seg, idx) => {
-          const segProgress = Math.max(0, Math.min(1, filledFloat - idx));
-          const fill = segProgress > 0.12 ? colors.main : trackStroke;
-          const fillOpacity = segProgress > 0.12 ? (0.38 + 0.62 * segProgress).toFixed(2) : '1';
-          return `<circle class="cr-bug-seg" style="animation-delay:${seg.delay}" cx="${seg.cx}" cy="${seg.cy}" r="${seg.r}" fill="${fill}" fill-opacity="${fillOpacity}"/>`;
-        })
-        .join('');
-
+      const cx = 11;
+      const cy = 11;
+      const orbitR = 6.9;
+      const maxSweep = Math.PI * 2 * 0.9;
+      const sweep = (clamped / 100) * maxSweep;
+      const headAngle = -Math.PI / 2 + sweep;
+      const sepStroke = dark ? '#181d27' : '#ffffff';
       const eyeColor = dark ? '#0f172a' : '#ffffff';
+
+      // 未走到的圆弧区域绘制轻柔圆点轨道，保持完整圆环视觉
+      const trackDots = [];
+      const slotCount = 10;
+      for (let i = 0; i < slotCount; i++) {
+        const offset = (i / slotCount) * Math.PI * 2;
+        if (offset > sweep + 0.34 && offset < Math.PI * 2 - 0.22) {
+          const a = -Math.PI / 2 + offset;
+          const tx = cx + orbitR * Math.cos(a);
+          const ty = cy + orbitR * Math.sin(a);
+          trackDots.push(`<circle cx="${tx.toFixed(2)}" cy="${ty.toFixed(2)}" r="0.95" fill="${trackStroke}"/>`);
+        }
+      }
+
+      // 从虫尾到虫颈依次叠画圆润身体节段（越靠近虫头越饱满）
+      const bodyNodes = [];
+      const usableArc = Math.max(0, sweep - 0.38);
+      if (sweep > 0.28) {
+        const segStep = 0.5;
+        const segCount = Math.max(1, Math.floor(usableArc / segStep) + 1);
+        for (let i = 0; i < segCount; i++) {
+          const ratio = segCount === 1 ? 0 : i / (segCount - 1);
+          const segOffset = segCount === 1 ? 0 : ratio * usableArc;
+          const a = -Math.PI / 2 + segOffset;
+          const bx = cx + orbitR * Math.cos(a);
+          const by = cy + orbitR * Math.sin(a);
+          const br = 1.75 + 0.45 * ratio;
+          const delay = (i * 0.11).toFixed(2);
+          bodyNodes.push(
+            `<circle class="cr-bug-seg" style="animation-delay:${delay}s" cx="${bx.toFixed(2)}" cy="${by.toFixed(2)}" r="${br.toFixed(2)}" fill="${colors.main}" stroke="${sepStroke}" stroke-width="0.6"/>`
+          );
+        }
+      }
+
+      const hx = cx + orbitR * Math.cos(headAngle);
+      const hy = cy + orbitR * Math.sin(headAngle);
+      const headDeg = (headAngle * 180) / Math.PI + 90;
+
       return `
-        <svg width="34" height="18" viewBox="0 0 34 18" fill="none" aria-hidden="true">
-          ${segNodes}
-          <g class="cr-bug-seg" style="animation-delay:0.9s">
-            <path d="M27.6 6.2 Q26.6 2.8 24.8 2.2" stroke="${colors.main}" stroke-width="1.2" stroke-linecap="round"/>
-            <path d="M29.6 6.1 Q31.2 2.8 32.8 2.4" stroke="${colors.main}" stroke-width="1.2" stroke-linecap="round"/>
-            <circle cx="28.3" cy="9.5" r="3.4" fill="${colors.main}"/>
-            <circle cx="29.6" cy="8.8" r="1.05" fill="${eyeColor}"/>
+        <svg width="20" height="20" viewBox="0 0 22 22" fill="none" aria-hidden="true">
+          ${trackDots.join('')}
+          ${bodyNodes.join('')}
+          <g transform="translate(${hx.toFixed(2)} ${hy.toFixed(2)}) rotate(${headDeg.toFixed(1)})">
+            <path d="M 1.3 -1.5 Q 2.9 -3.0 3.8 -2.1" stroke="${colors.main}" stroke-width="1.1" stroke-linecap="round"/>
+            <path d="M 1.6 1.1 Q 3.1 2.2 3.8 1.3" stroke="${colors.main}" stroke-width="1.1" stroke-linecap="round"/>
+            <circle cx="0" cy="0" r="2.6" fill="${colors.main}" stroke="${sepStroke}" stroke-width="0.55"/>
+            <circle cx="0.85" cy="-0.45" r="0.85" fill="${eyeColor}"/>
           </g>
         </svg>
       `;

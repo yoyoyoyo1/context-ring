@@ -185,6 +185,7 @@ async function syncRunningWindowsOverCdp(mode, settingsSnapshot, version) {
         if (mode === 'install') {
           const seedUsage = getConversationUsage('');
           const source =
+            `window.__CONTEXT_RING_FORCE_RELOAD__ = true;\n` +
             `window.__CONTEXT_RING_SEED_USAGE__ = ${JSON.stringify(seedUsage)};\n` +
             buildInjectedSource(settingsSnapshot, version);
           await client.send('Runtime.evaluate', { expression: source });
