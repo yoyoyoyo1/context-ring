@@ -60,16 +60,16 @@
     { value: 1000000, label: '1M' },
   ];
 
-  // 标准思考等级排序与星云主题色映射
+  // 标准思考等级排序与 Antigravity 融合色阶（蓝青 -> 主题蓝 -> 靛蓝 -> 星云紫）
   const EFFORT_META = {
-    minimal: { rank: 0, short: 'Min', display: 'Minimal', color: '#38bdf8', gradient: 'linear-gradient(90deg, #0284c7, #38bdf8)' },
-    low: { rank: 1, short: 'Low', display: 'Low', color: '#0ea5e9', gradient: 'linear-gradient(90deg, #0284c7, #0ea5e9, #38bdf8)' },
-    medium: { rank: 2, short: 'Med', display: 'Medium', color: '#3b82f6', gradient: 'linear-gradient(90deg, #1d4ed8, #3b82f6, #60a5fa)' },
-    high: { rank: 3, short: 'High', display: 'High', color: '#6366f1', gradient: 'linear-gradient(90deg, #1d4ed8, #4f46e5, #818cf8)' },
-    xhigh: { rank: 4, short: 'XHigh', display: 'XHigh', color: '#8b5cf6', gradient: 'linear-gradient(90deg, #1d4ed8, #6366f1, #8b5cf6)' },
-    'extra high': { rank: 4, short: 'XHigh', display: 'XHigh', color: '#8b5cf6', gradient: 'linear-gradient(90deg, #1d4ed8, #6366f1, #8b5cf6)' },
-    max: { rank: 5, short: 'Max', display: 'Max', color: '#9333ea', gradient: 'linear-gradient(90deg, #2563eb, #7c3aed, #a855f7)' },
-    ultra: { rank: 6, short: 'Ultra', display: 'Ultra', color: '#a855f7', gradient: 'linear-gradient(90deg, #2563eb, #7c3aed, #c084fc)' },
+    minimal: { rank: 0, short: 'Min', display: 'Minimal', color: '#64748b', gradient: 'linear-gradient(90deg, #94a3b8, #64748b)' },
+    low: { rank: 1, short: 'Low', display: 'Low', color: '#0284c7', gradient: 'linear-gradient(90deg, #7dd3fc, #38bdf8)' },
+    medium: { rank: 2, short: 'Med', display: 'Medium', color: '#2f75c3', gradient: 'linear-gradient(90deg, #60a5fa, #2f75c3)' },
+    high: { rank: 3, short: 'High', display: 'High', color: '#4f46e5', gradient: 'linear-gradient(90deg, #2f75c3, #4f46e5)' },
+    xhigh: { rank: 4, short: 'XHigh', display: 'XHigh', color: '#6d5df6', gradient: 'linear-gradient(90deg, #2f75c3, #4f46e5, #7c3aed)' },
+    'extra high': { rank: 4, short: 'XHigh', display: 'XHigh', color: '#6d5df6', gradient: 'linear-gradient(90deg, #2f75c3, #4f46e5, #7c3aed)' },
+    max: { rank: 5, short: 'Max', display: 'Max', color: '#7c3aed', gradient: 'linear-gradient(90deg, #2f75c3, #6366f1, #7c3aed)' },
+    ultra: { rank: 6, short: 'Ultra', display: 'Ultra', color: '#8b5cf6', gradient: 'linear-gradient(90deg, #2f75c3, #6366f1, #9333ea)' },
   };
 
   // 当前运行态配置与会话统计缓存
@@ -364,21 +364,20 @@
         animation: cr-core-pulse 2.2s ease-in-out infinite;
       }
 
-      /* 悬浮详情卡片 */
+      /* 悬浮详情卡片（原生 Antigravity 卡片材质 + 统一凹槽与浮块语言） */
       #${POPOVER_ID} {
         position: fixed;
         left: 0;
         top: 0;
         z-index: 99995;
-        width: 292px;
-        padding: 12px 13px;
-        border-radius: 15px;
-        border: 1px solid rgba(148, 163, 184, 0.24);
-        background: #ffffff;
-        color: #0f172a;
-        box-shadow: 0 14px 34px rgba(15, 23, 42, 0.14), 0 3px 10px rgba(15, 23, 42, 0.06);
+        width: 296px;
+        padding: 13px 14px 12px;
+        border-radius: 16px;
+        background: var(--card, #ffffff);
+        color: var(--foreground, #0a0a0c);
+        box-shadow: 0 0 0 1px rgba(10, 10, 12, 0.08), 0 12px 28px -4px rgba(10, 10, 12, 0.12), 0 2px 6px rgba(10, 10, 12, 0.04);
         contain: layout style paint;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-family: "Google Sans Flex", "Google Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
         font-size: 12px;
         opacity: 0;
         pointer-events: none;
@@ -386,10 +385,9 @@
         transition: opacity 0.15s ease, transform 0.15s cubic-bezier(0.16, 1, 0.3, 1);
       }
       #${POPOVER_ID}.is-dark {
-        border-color: rgba(148, 163, 184, 0.2);
-        background: rgba(20, 24, 33, 0.96);
-        color: #f1f5f9;
-        box-shadow: 0 16px 38px rgba(0, 0, 0, 0.5), 0 3px 10px rgba(0, 0, 0, 0.3);
+        background: var(--card, #181a20);
+        color: var(--foreground, #f4f4f5);
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.09), 0 16px 36px rgba(0, 0, 0, 0.52), 0 3px 8px rgba(0, 0, 0, 0.28);
       }
       #${POPOVER_ID}.is-open {
         opacity: 1;
@@ -401,254 +399,332 @@
         align-items: center;
         justify-content: space-between;
         gap: 8px;
-        margin-bottom: 4px;
+        margin-bottom: 10px;
       }
-      .cr-pop-title {
-        font-size: 12.5px;
-        font-weight: 700;
-        letter-spacing: -0.01em;
+      .cr-pop-hero {
+        display: flex;
+        align-items: baseline;
+        gap: 7px;
+        min-width: 0;
+      }
+      .cr-pop-pct {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 18px;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+        line-height: 1;
+      }
+      .cr-pop-cap {
+        font-size: 11px;
+        color: var(--muted-foreground, #71717a);
+        white-space: nowrap;
       }
       .cr-pop-head-right {
         display: inline-flex;
         align-items: center;
-        gap: 6px;
+        gap: 5px;
+        flex-shrink: 0;
       }
-      .cr-pop-pct {
-        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        font-size: 14.5px;
-        font-weight: 700;
+      .cr-pop-steps-tag {
+        font-size: 10.5px;
+        color: var(--muted-foreground, #71717a);
+        padding: 2px 6px;
+        border-radius: 999px;
+        background: var(--muted, rgba(10, 10, 12, 0.04));
+      }
+      #${POPOVER_ID}.is-dark .cr-pop-steps-tag {
+        background: rgba(255, 255, 255, 0.06);
       }
       .cr-open-settings-btn {
-        width: 24px;
-        height: 24px;
+        width: 25px;
+        height: 25px;
         padding: 0;
-        border: 1px solid transparent;
-        border-radius: 7px;
+        border: none;
+        border-radius: 8px;
         background: transparent;
-        color: inherit;
-        opacity: 0.68;
+        color: var(--muted-foreground, #71717a);
         display: inline-flex;
         align-items: center;
         justify-content: center;
         cursor: pointer;
-        transition: opacity 0.15s ease, background-color 0.15s ease, transform 0.2s ease;
+        transition: color 0.14s ease, background-color 0.14s ease, transform 0.2s ease;
       }
       .cr-open-settings-btn:hover {
-        opacity: 1;
-        background: rgba(148, 163, 184, 0.18);
+        color: var(--foreground, #0a0a0c);
+        background: var(--secondary, rgba(10, 10, 12, 0.06));
         transform: rotate(28deg);
       }
-      .cr-pop-sub {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        font-size: 11px;
-        opacity: 0.78;
-        margin-bottom: 8px;
-      }
-      .cr-pop-model {
-        max-width: 138px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        padding: 1px 6px;
-        border-radius: 999px;
-        background: rgba(148, 163, 184, 0.16);
-        font-size: 10.5px;
-      }
-      .cr-pop-bar {
-        display: flex;
-        height: 6px;
-        width: 100%;
-        border-radius: 999px;
-        overflow: hidden;
-        background: rgba(148, 163, 184, 0.2);
-        margin-bottom: 9px;
-      }
-      .cr-seg-cache { background: #10b981; transition: width 0.28s ease; }
-      .cr-seg-input { background: #0ea5e9; transition: width 0.28s ease; }
-      .cr-seg-output { background: #8b5cf6; transition: width 0.28s ease; }
-      .cr-pop-rows {
-        display: grid;
-        grid-template-columns: 10px 1fr auto;
-        align-items: center;
-        row-gap: 4px;
-        column-gap: 6px;
-        font-size: 11.5px;
-        margin-bottom: 10px;
-      }
-      .cr-dot { width: 7px; height: 7px; border-radius: 999px; }
-      .cr-row-val {
-        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        font-size: 11px;
-        font-weight: 600;
+      #${POPOVER_ID}.is-dark .cr-open-settings-btn:hover {
+        color: #f4f4f5;
+        background: rgba(255, 255, 255, 0.09);
       }
 
-      /* 思考等级星云滑块区块 */
-      .cr-effort-box {
-        padding: 8px 10px 7px;
-        border-radius: 12px;
-        border: 1px solid rgba(148, 163, 184, 0.2);
-        background: rgba(248, 250, 252, 0.78);
+      /* 原创微刻度分段胶囊用量槽 */
+      .cr-gauge-track {
+        position: relative;
+        display: flex;
+        align-items: stretch;
+        gap: 2px;
+        height: 10px;
+        padding: 2px;
+        border-radius: 999px;
+        background: var(--muted, rgba(10, 10, 12, 0.045));
+        box-shadow: inset 0 1px 2px rgba(10, 10, 12, 0.06);
         margin-bottom: 9px;
+        overflow: hidden;
       }
-      #${POPOVER_ID}.is-dark .cr-effort-box {
-        border-color: rgba(148, 163, 184, 0.16);
-        background: rgba(15, 23, 42, 0.56);
+      #${POPOVER_ID}.is-dark .cr-gauge-track {
+        background: rgba(255, 255, 255, 0.06);
+        box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
+      }
+      .cr-gauge-mark {
+        position: absolute;
+        top: 1px;
+        bottom: 1px;
+        width: 1px;
+        background: rgba(10, 10, 12, 0.08);
+        pointer-events: none;
+      }
+      #${POPOVER_ID}.is-dark .cr-gauge-mark {
+        background: rgba(255, 255, 255, 0.09);
+      }
+      .cr-seg-cache,
+      .cr-seg-input,
+      .cr-seg-output {
+        height: 100%;
+        border-radius: 999px;
+        transition: width 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      .cr-seg-cache { background: #10b981; }
+      .cr-seg-input { background: var(--primary, #2f75c3); }
+      .cr-seg-output { background: #7c6af6; }
+
+      /* 三列紧凑指标胶囊 */
+      .cr-stat-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 6px;
+        margin-bottom: 11px;
+      }
+      .cr-stat-chip {
+        padding: 6px 8px;
+        border-radius: 10px;
+        background: var(--muted, rgba(10, 10, 12, 0.038));
+      }
+      #${POPOVER_ID}.is-dark .cr-stat-chip {
+        background: rgba(255, 255, 255, 0.045);
+      }
+      .cr-stat-label {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 10px;
+        color: var(--muted-foreground, #71717a);
+        margin-bottom: 2px;
+      }
+      .cr-dot { width: 6px; height: 6px; border-radius: 999px; flex-shrink: 0; }
+      .cr-stat-val {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 11.5px;
+        font-weight: 700;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      /* 融合式磁吸思考深度滑轨（单行一体化，支持点击与拖拽） */
+      .cr-effort-box {
+        margin-bottom: 11px;
       }
       .cr-effort-head {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        margin-bottom: 7px;
+        gap: 8px;
+        margin-bottom: 6px;
       }
       .cr-effort-caption {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--muted-foreground, #71717a);
+      }
+      .cr-effort-model {
+        max-width: 165px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
         font-size: 10.5px;
-        opacity: 0.72;
+        color: var(--muted-foreground, #71717a);
       }
-      .cr-effort-level-name {
-        font-size: 13px;
-        font-weight: 800;
-        letter-spacing: -0.01em;
-        color: #8b5cf6;
-        transition: color 0.18s ease;
-      }
-      .cr-effort-track {
+      .cr-effort-rail {
         position: relative;
-        height: 20px;
-        border-radius: 999px;
-        background: rgba(148, 163, 184, 0.22);
+        height: 32px;
+        padding: 3px;
+        border-radius: 11px;
+        background: var(--muted, rgba(10, 10, 12, 0.045));
+        box-shadow: inset 0 0 0 1px rgba(10, 10, 12, 0.055);
         cursor: pointer;
         touch-action: none;
-        display: flex;
-        align-items: center;
-      }
-      #${POPOVER_ID}.is-dark .cr-effort-track {
-        background: rgba(148, 163, 184, 0.16);
-      }
-      .cr-effort-track.is-single {
-        cursor: default;
-        opacity: 0.78;
-      }
-      .cr-effort-fill {
-        position: relative;
-        height: 100%;
-        min-width: 20px;
-        border-radius: 999px;
-        background: linear-gradient(90deg, #1d4ed8, #6366f1, #8b5cf6);
         overflow: hidden;
-        transition: width 0.16s cubic-bezier(0.22, 1, 0.36, 1), background 0.2s ease;
       }
-      .cr-effort-track.is-dragging .cr-effort-fill,
-      .cr-effort-track.is-dragging .cr-effort-thumb {
+      #${POPOVER_ID}.is-dark .cr-effort-rail {
+        background: rgba(255, 255, 255, 0.055);
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+      }
+      .cr-effort-rail.is-single {
+        cursor: default;
+        opacity: 0.8;
+      }
+      /* 底部精致能量进度光带 */
+      .cr-effort-energy {
+        position: absolute;
+        left: 3px;
+        bottom: 0;
+        height: 2.5px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #2f75c3, #4f46e5);
+        pointer-events: none;
+        transition: width 0.2s cubic-bezier(0.22, 1, 0.36, 1), background 0.2s ease;
+      }
+      /* 磁吸纯白/深灰浮块 */
+      .cr-effort-pill {
+        position: absolute;
+        top: 3px;
+        bottom: 3px;
+        left: 3px;
+        border-radius: 8px;
+        background: #ffffff;
+        box-shadow: 0 1px 3px rgba(10, 10, 12, 0.1), 0 0 0 1px rgba(10, 10, 12, 0.05);
+        pointer-events: none;
+        transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1), width 0.18s ease;
+      }
+      #${POPOVER_ID}.is-dark .cr-effort-pill {
+        background: #282c37;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.36), 0 0 0 1px rgba(255, 255, 255, 0.08);
+      }
+      .cr-effort-rail.is-dragging .cr-effort-pill,
+      .cr-effort-rail.is-dragging .cr-effort-energy {
         transition: none;
       }
-      .cr-effort-stars {
-        position: absolute;
-        inset: 0;
-        pointer-events: none;
-        background-image:
-          radial-gradient(circle 1.2px at 14% 38%, rgba(255, 255, 255, 0.92), transparent 100%),
-          radial-gradient(circle 0.9px at 26% 68%, rgba(255, 255, 255, 0.72), transparent 100%),
-          radial-gradient(circle 1.3px at 42% 46%, rgba(255, 255, 255, 0.9), transparent 100%),
-          radial-gradient(circle 1.0px at 56% 70%, rgba(255, 255, 255, 0.8), transparent 100%),
-          radial-gradient(circle 1.2px at 72% 34%, rgba(255, 255, 255, 0.88), transparent 100%),
-          radial-gradient(circle 0.9px at 84% 62%, rgba(255, 255, 255, 0.78), transparent 100%);
-        animation: cr-star-twinkle 2.8s ease-in-out infinite;
+      .cr-effort-grid {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        height: 100%;
       }
-      .cr-effort-thumb {
-        position: absolute;
-        top: 50%;
-        width: 20px;
-        height: 20px;
-        border-radius: 999px;
-        background: #ffffff;
-        border: 1.5px solid rgba(148, 163, 184, 0.32);
-        box-shadow: 0 2px 6px rgba(15, 23, 42, 0.22);
-        transform: translate(-100%, -50%);
-        pointer-events: none;
-        transition: left 0.16s cubic-bezier(0.22, 1, 0.36, 1);
-      }
-      .cr-effort-ticks {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-top: 5px;
-        gap: 2px;
-      }
-      .cr-effort-tick {
+      .cr-effort-step {
         border: none;
         background: transparent;
-        color: inherit;
-        opacity: 0.52;
-        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        font-size: 10px;
+        color: var(--muted-foreground, #71717a);
+        font-size: 11px;
         font-weight: 600;
-        padding: 1px 4px;
-        border-radius: 5px;
+        padding: 0 2px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
         cursor: pointer;
-        transition: opacity 0.14s ease, color 0.14s ease, background-color 0.14s ease;
+        user-select: none;
+        transition: color 0.15s ease;
       }
-      .cr-effort-tick:hover { opacity: 0.92; }
-      .cr-effort-tick.is-active {
+      .cr-effort-step:hover {
+        color: var(--foreground, #0a0a0c);
+      }
+      #${POPOVER_ID}.is-dark .cr-effort-step:hover {
+        color: #f4f4f5;
+      }
+      .cr-effort-step.is-active {
+        color: var(--foreground, #0a0a0c);
+        font-weight: 700;
+      }
+      #${POPOVER_ID}.is-dark .cr-effort-step.is-active {
+        color: #ffffff;
+      }
+      .cr-effort-dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 999px;
+        opacity: 0.35;
+        transition: opacity 0.15s ease, transform 0.15s ease;
+      }
+      .cr-effort-step.is-active .cr-effort-dot {
         opacity: 1;
-        color: #7c3aed;
-        background: rgba(139, 92, 246, 0.13);
-      }
-      #${POPOVER_ID}.is-dark .cr-effort-tick.is-active {
-        color: #c4b5fd;
-        background: rgba(139, 92, 246, 0.24);
+        transform: scale(1.15);
       }
 
+      /* 底部统一风格分段栏 */
       .cr-pop-foot {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 6px;
+        gap: 8px;
       }
       .cr-limit-group {
         display: inline-flex;
         gap: 2px;
         padding: 2px;
-        border-radius: 7px;
-        background: rgba(148, 163, 184, 0.14);
+        border-radius: 9px;
+        background: var(--muted, rgba(10, 10, 12, 0.045));
+        box-shadow: inset 0 0 0 1px rgba(10, 10, 12, 0.045);
+      }
+      #${POPOVER_ID}.is-dark .cr-limit-group {
+        background: rgba(255, 255, 255, 0.055);
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
       }
       .cr-limit-btn {
         border: none;
         background: transparent;
-        color: inherit;
-        opacity: 0.7;
+        color: var(--muted-foreground, #71717a);
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         font-size: 10.5px;
         font-weight: 600;
-        padding: 3px 7px;
-        border-radius: 5px;
-        cursor: pointer;
-      }
-      .cr-limit-btn.is-active {
-        opacity: 1;
-        background: rgba(16, 185, 129, 0.2);
-        color: #059669;
-      }
-      #${POPOVER_ID}.is-dark .cr-limit-btn.is-active {
-        background: rgba(16, 185, 129, 0.26);
-        color: #6ee7b7;
-      }
-      .cr-compact-btn {
-        border: 1px solid rgba(148, 163, 184, 0.28);
-        background: transparent;
-        color: inherit;
-        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        font-size: 10.5px;
-        font-weight: 600;
-        padding: 3px 8px;
+        padding: 4px 8px;
         border-radius: 7px;
         cursor: pointer;
-        transition: background-color 0.14s ease;
+        transition: color 0.14s ease, background-color 0.14s ease, box-shadow 0.14s ease;
+      }
+      .cr-limit-btn:hover {
+        color: var(--foreground, #0a0a0c);
+      }
+      #${POPOVER_ID}.is-dark .cr-limit-btn:hover {
+        color: #f4f4f5;
+      }
+      .cr-limit-btn.is-active {
+        background: #ffffff;
+        color: var(--foreground, #0a0a0c);
+        box-shadow: 0 1px 2px rgba(10, 10, 12, 0.1), 0 0 0 1px rgba(10, 10, 12, 0.04);
+      }
+      #${POPOVER_ID}.is-dark .cr-limit-btn.is-active {
+        background: #282c37;
+        color: #ffffff;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.32);
+      }
+      .cr-compact-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        border: 1px solid rgba(10, 10, 12, 0.1);
+        background: transparent;
+        color: var(--secondary-foreground, #3f3f46);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 10.5px;
+        font-weight: 600;
+        padding: 4px 9px;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: background-color 0.14s ease, color 0.14s ease;
+      }
+      #${POPOVER_ID}.is-dark .cr-compact-btn {
+        border-color: rgba(255, 255, 255, 0.12);
+        color: #d4d4d8;
       }
       .cr-compact-btn:hover {
-        background: rgba(148, 163, 184, 0.16);
+        background: var(--secondary, rgba(10, 10, 12, 0.06));
+        color: var(--foreground, #0a0a0c);
+      }
+      #${POPOVER_ID}.is-dark .cr-compact-btn:hover {
+        background: rgba(255, 255, 255, 0.09);
+        color: #ffffff;
       }
 
       /* 独立样式与监控设置页面（无全屏模糊，确保 60fps 流畅切换） */
@@ -1212,41 +1288,35 @@
   }
 
   /**
-   * 更新悬浮卡片内思考等级滑块的视觉位置与高亮文案
+   * 更新融合式磁吸思考深度滑轨的浮块位置与底部能量光带
    */
   function updateEffortSliderVisual(pop, levels, idx) {
     const level = levels[idx] || levels[0];
     if (!level) return;
 
-    const count = levels.length;
-    const ratio = count <= 1 ? 1 : idx / (count - 1);
-    const track = pop.querySelector('[data-role="effort-track"]');
-    const fill = pop.querySelector('[data-role="effort-fill"]');
-    const thumb = pop.querySelector('[data-role="effort-thumb"]');
-    const nameEl = pop.querySelector('[data-role="effort-name"]');
+    const count = Math.max(1, levels.length);
+    const rail = pop.querySelector('[data-role="effort-rail"]');
+    const pill = pop.querySelector('[data-role="effort-pill"]');
+    const energy = pop.querySelector('[data-role="effort-energy"]');
 
-    const trackWidth = track?.clientWidth || 242;
-    const thumbPx = 20;
-    const fillPx = Math.round(thumbPx + ratio * Math.max(0, trackWidth - thumbPx));
+    const innerWidth = Math.max(40, (rail?.clientWidth || 268) - 6);
+    const segWidth = innerWidth / count;
 
-    if (fill) {
-      fill.style.width = `${fillPx}px`;
-      fill.style.background = level.gradient;
+    if (pill) {
+      pill.style.width = `${segWidth.toFixed(1)}px`;
+      pill.style.transform = `translateX(${(idx * segWidth).toFixed(1)}px)`;
     }
-    if (thumb) {
-      thumb.style.left = `${fillPx}px`;
+    if (energy) {
+      energy.style.width = `${((idx + 1) * segWidth).toFixed(1)}px`;
+      energy.style.background = level.gradient;
     }
-    if (nameEl) {
-      nameEl.textContent = level.display;
-      nameEl.style.color = level.color;
-    }
-    for (const tickBtn of pop.querySelectorAll('.cr-effort-tick')) {
-      tickBtn.classList.toggle('is-active', Number(tickBtn.dataset.idx) === idx);
+    for (const stepBtn of pop.querySelectorAll('.cr-effort-step')) {
+      stepBtn.classList.toggle('is-active', Number(stepBtn.dataset.idx) === idx);
     }
   }
 
   /**
-   * 渲染悬浮卡片中的思考等级滑块区域
+   * 渲染悬浮卡片中的融合式思考深度滑轨
    */
   function renderThinkingEffortControl(pop, footerEl) {
     const box = pop.querySelector('[data-role="effort-box"]');
@@ -1262,20 +1332,21 @@
 
     box.style.display = '';
     const isSingle = controller.levels.length < 2;
-    const track = pop.querySelector('[data-role="effort-track"]');
-    track.classList.toggle('is-single', isSingle);
+    const rail = pop.querySelector('[data-role="effort-rail"]');
+    rail.classList.toggle('is-single', isSingle);
 
-    const captionEl = pop.querySelector('[data-role="effort-caption"]');
-    captionEl.textContent = `思考等级 · ${controller.family}`;
+    const modelEl = pop.querySelector('[data-role="effort-model"]');
+    if (modelEl) modelEl.textContent = controller.family;
 
-    const ticksEl = pop.querySelector('[data-role="effort-ticks"]');
-    const ticksSig = controller.levels.map((l) => l.short).join('|');
-    if (ticksEl.dataset.sig !== ticksSig) {
-      ticksEl.dataset.sig = ticksSig;
-      ticksEl.innerHTML = controller.levels
+    const gridEl = pop.querySelector('[data-role="effort-grid"]');
+    const sig = controller.levels.map((l) => l.short).join('|');
+    if (gridEl.dataset.sig !== sig) {
+      gridEl.dataset.sig = sig;
+      gridEl.style.gridTemplateColumns = `repeat(${controller.levels.length}, minmax(0, 1fr))`;
+      gridEl.innerHTML = controller.levels
         .map(
           (item, idx) =>
-            `<button type="button" class="cr-effort-tick" data-idx="${idx}">${item.short}</button>`
+            `<button type="button" class="cr-effort-step" data-idx="${idx}"><span class="cr-effort-dot" style="background:${item.color}"></span><span>${item.short}</span></button>`
         )
         .join('');
     }
@@ -1308,7 +1379,7 @@
   }
 
   /**
-   * 创建或获取全局唯一的悬浮详情卡片（右上角含设置按钮，中部为思考等级滑块）
+   * 创建或获取全局唯一的悬浮详情卡片（原生 Antigravity 精密仪表卡风格）
    */
   function getOrCreatePopover() {
     let pop = document.getElementById(POPOVER_ID);
@@ -1319,9 +1390,12 @@
     pop.className = 'no-focus-agent-input';
     pop.innerHTML = `
       <div class="cr-pop-head">
-        <span class="cr-pop-title">上下文窗口</span>
-        <div class="cr-pop-head-right">
+        <div class="cr-pop-hero">
           <span class="cr-pop-pct" data-role="pct">0.0%</span>
+          <span class="cr-pop-cap" data-role="summary">0 / 512k</span>
+        </div>
+        <div class="cr-pop-head-right">
+          <span class="cr-pop-steps-tag" data-role="val-steps">0 轮 · 0 步</span>
           <button type="button" class="cr-open-settings-btn" data-role="open-settings-btn" title="打开样式与监控设置页面" aria-label="打开 Context Ring 设置">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <circle cx="12" cy="12" r="3.2"/>
@@ -1330,45 +1404,42 @@
           </button>
         </div>
       </div>
-      <div class="cr-pop-sub">
-        <span data-role="summary">0 / 512k tokens</span>
-        <span class="cr-pop-model" data-role="model">Model</span>
-      </div>
-      <div class="cr-pop-bar">
+
+      <div class="cr-gauge-track">
         <div class="cr-seg-cache" data-role="seg-cache" style="width:0%"></div>
         <div class="cr-seg-input" data-role="seg-input" style="width:0%"></div>
         <div class="cr-seg-output" data-role="seg-output" style="width:0%"></div>
+        <span class="cr-gauge-mark" style="left:60%"></span>
+        <span class="cr-gauge-mark" style="left:85%"></span>
       </div>
-      <div class="cr-pop-rows">
-        <span class="cr-dot" style="background:#10b981"></span>
-        <span>缓存命中</span>
-        <span class="cr-row-val" data-role="val-cache">0 (0%)</span>
 
-        <span class="cr-dot" style="background:#0ea5e9"></span>
-        <span>本轮新增输入</span>
-        <span class="cr-row-val" data-role="val-input">0</span>
-
-        <span class="cr-dot" style="background:#8b5cf6"></span>
-        <span>本轮 / 累计输出</span>
-        <span class="cr-row-val" data-role="val-output">0 / 0</span>
-
-        <span class="cr-dot" style="background:#94a3b8"></span>
-        <span>对话轮次 / 步数</span>
-        <span class="cr-row-val" data-role="val-steps">0 轮 · 0 步</span>
+      <div class="cr-stat-grid">
+        <div class="cr-stat-chip" data-role="chip-cache">
+          <div class="cr-stat-label"><span class="cr-dot" style="background:#10b981"></span><span>缓存命中</span></div>
+          <div class="cr-stat-val" data-role="val-cache">0%</div>
+        </div>
+        <div class="cr-stat-chip" data-role="chip-input">
+          <div class="cr-stat-label"><span class="cr-dot" style="background:var(--primary, #2f75c3)"></span><span>新增输入</span></div>
+          <div class="cr-stat-val" data-role="val-input">0</div>
+        </div>
+        <div class="cr-stat-chip" data-role="chip-output">
+          <div class="cr-stat-label"><span class="cr-dot" style="background:#7c6af6"></span><span>累计输出</span></div>
+          <div class="cr-stat-val" data-role="val-output">0</div>
+        </div>
       </div>
+
       <div class="cr-effort-box" data-role="effort-box">
         <div class="cr-effort-head">
-          <span class="cr-effort-caption" data-role="effort-caption">思考等级</span>
-          <span class="cr-effort-level-name" data-role="effort-name">--</span>
+          <span class="cr-effort-caption">思考深度</span>
+          <span class="cr-effort-model" data-role="effort-model">Model</span>
         </div>
-        <div class="cr-effort-track" data-role="effort-track">
-          <div class="cr-effort-fill" data-role="effort-fill">
-            <div class="cr-effort-stars"></div>
-          </div>
-          <div class="cr-effort-thumb" data-role="effort-thumb"></div>
+        <div class="cr-effort-rail" data-role="effort-rail">
+          <div class="cr-effort-energy" data-role="effort-energy"></div>
+          <div class="cr-effort-pill" data-role="effort-pill"></div>
+          <div class="cr-effort-grid" data-role="effort-grid"></div>
         </div>
-        <div class="cr-effort-ticks" data-role="effort-ticks"></div>
       </div>
+
       <div class="cr-pop-foot">
         <div class="cr-limit-group" data-role="limit-group">
           ${LIMIT_OPTIONS.map((opt) => `<button type="button" class="cr-limit-btn" data-limit="${opt.value}">${opt.label}</button>`).join('')}
@@ -1398,8 +1469,8 @@
       openSettingsPage();
     });
 
-    // 思考等级滑块拖拽与点击定位
-    const effortTrack = pop.querySelector('[data-role="effort-track"]');
+    // 融合式磁吸思考深度滑轨：同时支持点击任意档位与水平滑动拖拽
+    const effortRail = pop.querySelector('[data-role="effort-rail"]');
     let draggingEffort = false;
     let dragPickedIdx = 0;
 
@@ -1407,25 +1478,25 @@
       const box = pop.querySelector('[data-role="effort-box"]');
       const ctrl = box?._effortController;
       if (!ctrl || ctrl.levels.length < 2) return 0;
-      const rect = effortTrack.getBoundingClientRect();
-      const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
-      return Math.round(ratio * (ctrl.levels.length - 1));
+      const rect = effortRail.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(0.9999, (clientX - rect.left) / Math.max(1, rect.width)));
+      return Math.min(ctrl.levels.length - 1, Math.floor(ratio * ctrl.levels.length));
     }
 
-    effortTrack.addEventListener('pointerdown', (e) => {
+    effortRail.addEventListener('pointerdown', (e) => {
       e.stopPropagation();
       const box = pop.querySelector('[data-role="effort-box"]');
       const ctrl = box?._effortController;
       if (!ctrl || ctrl.levels.length < 2) return;
       draggingEffort = true;
       popoverPinned = true;
-      effortTrack.classList.add('is-dragging');
-      effortTrack.setPointerCapture?.(e.pointerId);
+      effortRail.classList.add('is-dragging');
+      effortRail.setPointerCapture?.(e.pointerId);
       dragPickedIdx = calcIdxFromClientX(e.clientX);
       updateEffortSliderVisual(pop, ctrl.levels, dragPickedIdx);
     });
 
-    effortTrack.addEventListener('pointermove', (e) => {
+    effortRail.addEventListener('pointermove', (e) => {
       if (!draggingEffort) return;
       const box = pop.querySelector('[data-role="effort-box"]');
       const ctrl = box?._effortController;
@@ -1437,26 +1508,15 @@
     function finishEffortDrag(e) {
       if (!draggingEffort) return;
       draggingEffort = false;
-      effortTrack.classList.remove('is-dragging');
+      effortRail.classList.remove('is-dragging');
       try {
-        effortTrack.releasePointerCapture?.(e.pointerId);
+        effortRail.releasePointerCapture?.(e.pointerId);
       } catch {}
       commitThinkingEffortIndex(pop, dragPickedIdx);
     }
 
-    effortTrack.addEventListener('pointerup', finishEffortDrag);
-    effortTrack.addEventListener('pointercancel', finishEffortDrag);
-
-    // 点击底部刻度文字快捷切换思考等级
-    pop.querySelector('[data-role="effort-ticks"]').addEventListener('click', (e) => {
-      e.stopPropagation();
-      const btn = e.target.closest('.cr-effort-tick');
-      if (!btn) return;
-      const idx = Number(btn.dataset.idx);
-      if (Number.isInteger(idx)) {
-        commitThinkingEffortIndex(pop, idx);
-      }
-    });
+    effortRail.addEventListener('pointerup', finishEffortDrag);
+    effortRail.addEventListener('pointercancel', finishEffortDrag);
 
     // 切换 256k / 512k / 1M 上限并同步持久化
     pop.querySelector('[data-role="limit-group"]').addEventListener('click', (e) => {
@@ -1534,18 +1594,32 @@
       pctEl.style.color = colors.main;
 
       pop.querySelector('[data-role="summary"]').textContent =
-        `${formatCompactTokens(total)} / ${formatCompactTokens(limit)} tokens`;
-      pop.querySelector('[data-role="model"]').textContent =
-        modelLabel || data.modelName || 'Model';
+        `${formatCompactTokens(total)} / ${formatCompactTokens(limit)}`;
 
       const denom = Math.max(limit, total, 1);
-      pop.querySelector('[data-role="seg-cache"]').style.width = `${Math.min(100, (cacheRead / denom) * 100).toFixed(2)}%`;
-      pop.querySelector('[data-role="seg-input"]').style.width = `${Math.min(100, (freshInput / denom) * 100).toFixed(2)}%`;
-      pop.querySelector('[data-role="seg-output"]').style.width = `${Math.min(100, (outTokens / denom) * 100).toFixed(2)}%`;
+      const cachePct = Math.min(100, (cacheRead / denom) * 100);
+      const inputPct = Math.min(100, (freshInput / denom) * 100);
+      const outPct = Math.min(100, (outTokens / denom) * 100);
 
-      pop.querySelector('[data-role="val-cache"]').textContent = `${formatExactNumber(cacheRead)} (${hitRate.toFixed(1)}%)`;
-      pop.querySelector('[data-role="val-input"]').textContent = formatExactNumber(freshInput);
-      pop.querySelector('[data-role="val-output"]').textContent = `${formatCompactTokens(outTokens)} / ${formatCompactTokens(cumOut)}`;
+      const segCache = pop.querySelector('[data-role="seg-cache"]');
+      const segInput = pop.querySelector('[data-role="seg-input"]');
+      const segOut = pop.querySelector('[data-role="seg-output"]');
+      segCache.style.width = `${cachePct.toFixed(2)}%`;
+      segCache.style.display = cachePct > 0.1 ? '' : 'none';
+      segInput.style.width = `${inputPct.toFixed(2)}%`;
+      segInput.style.display = inputPct > 0.1 ? '' : 'none';
+      segOut.style.width = `${outPct.toFixed(2)}%`;
+      segOut.style.display = outPct > 0.1 ? '' : 'none';
+
+      pop.querySelector('[data-role="val-cache"]').textContent = `${hitRate.toFixed(1)}%`;
+      pop.querySelector('[data-role="chip-cache"]').title = `缓存命中: ${formatExactNumber(cacheRead)} tokens (${hitRate.toFixed(1)}%)`;
+
+      pop.querySelector('[data-role="val-input"]').textContent = formatCompactTokens(freshInput);
+      pop.querySelector('[data-role="chip-input"]').title = `本轮新增输入: ${formatExactNumber(freshInput)} tokens`;
+
+      pop.querySelector('[data-role="val-output"]').textContent = formatCompactTokens(cumOut || outTokens);
+      pop.querySelector('[data-role="chip-output"]').title = `本轮输出 ${formatExactNumber(outTokens)} / 累计输出 ${formatExactNumber(cumOut)}`;
+
       pop.querySelector('[data-role="val-steps"]').textContent = `${Number(data.turnCount || 0)} 轮 · ${Number(data.plannerStepCount || 0)} 步`;
 
       for (const btn of pop.querySelectorAll('.cr-limit-btn')) {
