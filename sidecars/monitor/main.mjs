@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getPluginPaths } from '../../lib/paths.mjs';
 import { createSettingsStore } from '../../lib/settings.mjs';
-import { getConversationUsage } from '../../lib/transcript-parser.mjs';
+import { createEmptyUsage, getConversationUsage } from '../../lib/transcript-parser.mjs';
 import { configureClientLaunchers, getManualLaunchHint } from '../../lib/launcher.mjs';
 import { startCdpInjectionHost } from '../../lib/cdp-host.mjs';
 import { renderSidecarDashboardHtml } from '../../lib/dashboard-ui.mjs';
@@ -191,11 +191,29 @@ async function main() {
 
       if (req.method === 'GET' && urlObj.pathname === '/api/state') {
         const health = await cdpHost.getHealth();
-        const activeCid =
-          urlObj.searchParams.get('conversationId') ||
-          health.windows?.find((w) => w.activeConversationId)?.activeConversationId ||
-          '';
-        const usage = getConversationUsage(activeCid, { knownDistrosFile });
+        const queryCid = String(urlObj.searchParams.get('conversationId') || '').trim();
+        const windows = Array.isArray(health.windows) ? health.windows : [];
+        let usage;
+        if (queryCid) {
+          usage = getConversationUsage(queryCid, { knownDistrosFile, allowLatestFallback: false });
+        } else if (windows.length > 0) {
+          const focusedWin = windows.find((w) => w.focused) || null;
+          let targetWin = focusedWin;
+          if (!targetWin) {
+            const recentlyFocused = windows
+              .filter((w) => Number(w.lastFocusedAt || 0) > 0)
+              .sort((a, b) => Number(b.lastFocusedAt || 0) - Number(a.lastFocusedAt || 0))[0];
+            targetWin =
+              recentlyFocused ||
+              (windows.length === 1 ? windows[0] : windows.find((w) => w.activeConversationId) || windows[0]);
+          }
+          const targetCid = String(targetWin?.activeConversationId || '').trim();
+          usage = targetCid
+            ? getConversationUsage(targetCid, { knownDistrosFile, allowLatestFallback: false })
+            : createEmptyUsage('', '');
+        } else {
+          usage = getConversationUsage('', { knownDistrosFile, allowLatestFallback: true });
+        }
 
         res.writeHead(200, {
           'Content-Type': 'application/json; charset=utf-8',

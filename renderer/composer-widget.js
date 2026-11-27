@@ -1266,9 +1266,13 @@
       return `
         <svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" aria-hidden="true">
           <circle cx="9" cy="9" r="${r}" stroke="${trackStroke}" stroke-width="1.9"/>
-          <circle cx="9" cy="9" r="${r}" stroke="${colors.main}" stroke-width="2.1"
+          ${
+            clamped > 0
+              ? `<circle cx="9" cy="9" r="${r}" stroke="${colors.main}" stroke-width="2.1"
             stroke-linecap="round" stroke-dasharray="${c.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}"
-            transform="rotate(-90 9 9)"/>
+            transform="rotate(-90 9 9)"/>`
+              : ''
+          }
           <circle class="cr-ring-core" cx="9" cy="9" r="2.0" fill="${colors.main}"/>
         </svg>
       `;
@@ -1286,13 +1290,21 @@
       return `
         <svg width="${size}" height="${size}" viewBox="0 0 20 20" fill="none" aria-hidden="true">
           <circle cx="10" cy="10" r="${outerR}" stroke="${trackStroke}" stroke-width="3.5"/>
-          <circle cx="10" cy="10" r="${outerR}" stroke="${colors.main}" stroke-width="3.5"
+          ${
+            clamped > 0
+              ? `<circle cx="10" cy="10" r="${outerR}" stroke="${colors.main}" stroke-width="3.5"
             stroke-linecap="round" stroke-dasharray="${outerC.toFixed(2)}" stroke-dashoffset="${outerOff.toFixed(2)}"
-            transform="rotate(-90 10 10)"/>
+            transform="rotate(-90 10 10)"/>`
+              : ''
+          }
           <circle cx="10" cy="10" r="${innerR}" stroke="${trackStroke}" stroke-width="1.4" stroke-opacity="0.6"/>
-          <circle cx="10" cy="10" r="${innerR}" stroke="#10b981" stroke-width="1.5"
+          ${
+            cacheClamped > 0
+              ? `<circle cx="10" cy="10" r="${innerR}" stroke="#10b981" stroke-width="1.5"
             stroke-linecap="round" stroke-dasharray="${innerC.toFixed(2)}" stroke-dashoffset="${innerOff.toFixed(2)}"
-            transform="rotate(-90 10 10)"/>
+            transform="rotate(-90 10 10)"/>`
+              : ''
+          }
         </svg>
       `;
     }
@@ -2122,54 +2134,108 @@
   }
 
   /**
-   * 从输入框节点向上提取当前会话 ID 与模型名称（React Fiber + URL 兜底）
+   * 构造严格归零的空白会话统计对象
+   */
+  function createEmptyWidgetUsage(modelName = '') {
+    return {
+      conversationId: '',
+      totalTokens: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      outputTokens: 0,
+      cumulativeOutputTokens: 0,
+      cacheHitRate: 0,
+      turnCount: 0,
+      plannerStepCount: 0,
+      history: [],
+      modelName: modelName || 'Model',
+    };
+  }
+
+  /**
+   * 判断输入框节点当前是否在视口布局中可见（用于区分活跃输入框与后台隐藏节点）
+   */
+  function isElementVisible(el) {
+    if (!el || !document.body || !document.body.contains(el)) return false;
+    try {
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 从输入框节点向上提取当前会话 ID 与模型名称（严格以当前输入框控制器为准，避免空白新会话串台）
    */
   function extractComposerContext(footerEl) {
     let conversationId = '';
     let modelLabel = '';
+    let explicitBlankComposer = false;
 
-    if (footerEl) {
-      const fiberKey = Object.keys(footerEl).find(
+    const card = footerEl?.closest?.('.surface-composer-card') || null;
+    const fiberNodes = [];
+    const editorEl = card?.querySelector?.('[contenteditable="true"]') || null;
+    if (editorEl) fiberNodes.push(editorEl);
+    if (footerEl && footerEl !== editorEl) fiberNodes.push(footerEl);
+
+    for (const node of fiberNodes) {
+      const fiberKey = Object.keys(node).find(
         (key) => key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$')
       );
-      if (fiberKey) {
-        let cursor = footerEl[fiberKey];
-        let depth = 0;
-        while (cursor && depth < 36) {
-          const props = cursor.memoizedProps;
-          if (props && typeof props === 'object') {
-            if (!conversationId) {
-              if (typeof props.cascadeId === 'string' && props.cascadeId.length >= 8) {
-                conversationId = props.cascadeId;
-              } else if (typeof props.conversationId === 'string' && props.conversationId.length >= 8) {
-                conversationId = props.conversationId;
-              }
-            }
-            if (!modelLabel && props.currentModelConfig && typeof props.currentModelConfig.label === 'string') {
-              modelLabel = props.currentModelConfig.label;
+      if (!fiberKey) continue;
+
+      let cursor = node[fiberKey];
+      let depth = 0;
+      let hitBlankController = false;
+
+      while (cursor && depth < 36) {
+        const props = cursor.memoizedProps;
+        if (props && typeof props === 'object') {
+          const isComposerController = typeof props.handleSubmit === 'function';
+          const hasCidProp =
+            Object.prototype.hasOwnProperty.call(props, 'cascadeId') ||
+            Object.prototype.hasOwnProperty.call(props, 'conversationId');
+
+          if (!conversationId && !explicitBlankComposer && !hitBlankController) {
+            const rawCascadeId = typeof props.cascadeId === 'string' ? props.cascadeId.trim() : '';
+            const rawConversationId = typeof props.conversationId === 'string' ? props.conversationId.trim() : '';
+            const rawCid = rawCascadeId.length >= 8 ? rawCascadeId : rawConversationId;
+
+            if (rawCid.length >= 8) {
+              conversationId = rawCid;
+            } else if (isComposerController && hasCidProp) {
+              // 当前 AgentInputBox 显式声明无会话 ID（空白新会话），禁止继续向上层组件或 URL 拾取旧会话
+              hitBlankController = true;
+              explicitBlankComposer = true;
             }
           }
-          if (conversationId && modelLabel) break;
-          cursor = cursor.return;
-          depth++;
+
+          if (!modelLabel && props.currentModelConfig && typeof props.currentModelConfig.label === 'string') {
+            modelLabel = props.currentModelConfig.label;
+          }
         }
+        if ((conversationId || explicitBlankComposer || hitBlankController) && modelLabel) break;
+        cursor = cursor.return;
+        depth++;
       }
+
+      if ((conversationId || explicitBlankComposer) && modelLabel) break;
     }
 
-    if (!conversationId) {
+    if (!conversationId && !explicitBlankComposer) {
       const pathMatch = String(location.pathname || '').match(/^\/c\/([a-zA-Z0-9_-]{8,128})/);
       if (pathMatch) conversationId = pathMatch[1];
     }
 
-    if (!modelLabel && footerEl) {
-      const card = footerEl.closest('.surface-composer-card');
-      const modelBtn = card ? card.querySelector('[data-testid="model-selector-trigger"]') : null;
+    if (!modelLabel && card) {
+      const modelBtn = card.querySelector('[data-testid="model-selector-trigger"]');
       if (modelBtn && modelBtn.textContent) {
         modelLabel = modelBtn.textContent.trim();
       }
     }
 
-    return { conversationId, modelLabel };
+    return { conversationId, modelLabel, explicitBlankComposer };
   }
 
   /**
@@ -2692,18 +2758,8 @@
     pop.classList.toggle('is-dark', isDarkTheme());
 
     const { conversationId, modelLabel } = extractComposerContext(footerEl);
-    const cacheKey = conversationId || '__empty__';
-    const data = usageCache.get(cacheKey) || {
-      totalTokens: 0,
-      inputTokens: 0,
-      cacheReadTokens: 0,
-      outputTokens: 0,
-      cumulativeOutputTokens: 0,
-      cacheHitRate: 0,
-      turnCount: 0,
-      plannerStepCount: 0,
-      modelName: modelLabel || 'Model',
-    };
+    const data =
+      (conversationId ? usageCache.get(conversationId) : null) || createEmptyWidgetUsage(modelLabel);
 
     const limit = Number(currentSettings.contextLimit || 512000);
     const total = Number(data.totalTokens || 0);
@@ -2716,11 +2772,15 @@
     const colors = resolveThemeColors(pct);
 
     const fingerprint = [
+      conversationId,
       total,
       cacheRead,
       freshInput,
       outTokens,
       cumOut,
+      hitRate,
+      Number(data.turnCount || 0),
+      Number(data.plannerStepCount || 0),
       limit,
       currentSettings.palette,
       modelLabel || data.modelName,
@@ -2929,9 +2989,16 @@
     const modal = getOrCreateSettingsModal();
     modal.classList.toggle('is-dark', isDarkTheme());
 
-    const footerRef = lastOpenedFooterEl || document.body.getElementsByClassName('agy-composer-footer')[0] || null;
-    const { conversationId } = extractComposerContext(footerRef);
-    const data = usageCache.get(conversationId || '__empty__') || Array.from(usageCache.values())[0] || {};
+    const allFooters = Array.from(document.body.getElementsByClassName('agy-composer-footer'));
+    const footerRef =
+      (activeFooterEl && isElementVisible(activeFooterEl) ? activeFooterEl : null) ||
+      (lastOpenedFooterEl && isElementVisible(lastOpenedFooterEl) ? lastOpenedFooterEl : null) ||
+      allFooters.find((el) => isElementVisible(el)) ||
+      allFooters[0] ||
+      null;
+    const { conversationId, modelLabel } = extractComposerContext(footerRef);
+    const data =
+      (conversationId ? usageCache.get(conversationId) : null) || createEmptyWidgetUsage(modelLabel);
     const limit = Number(currentSettings.contextLimit || 512000);
     const realPct = limit > 0 ? Math.min(100, (Number(data.totalTokens || 0) / limit) * 100) : 0;
     const previewPct = settingsPreviewPct === null ? realPct : settingsPreviewPct;
@@ -2989,7 +3056,7 @@
 
     const hist = Array.isArray(data.history) ? data.history : [];
     const lastHist = hist.length ? hist[hist.length - 1] : null;
-    const trendSig = `${limit}|${hist.length}|${lastHist?.step || 0}|${lastHist?.totalTokens || 0}`;
+    const trendSig = `${conversationId}|${limit}|${hist.length}|${lastHist?.step || 0}|${lastHist?.totalTokens || 0}`;
     if (trendSig !== lastModalTrendSig) {
       lastModalTrendSig = trendSig;
       const maxStep = Math.max(limit * 0.25, ...hist.map((x) => Number(x.totalTokens || 0)), 1);
@@ -3155,7 +3222,7 @@
       const slot = btn.querySelector('.cr-graphic-slot');
       const pctText = btn.querySelector('.cr-pct-text');
       slot.innerHTML = buildShapeSvg(currentSettings.styleMode, pct, hitRate, colors, uid, 20);
-      pctText.textContent = pct >= 10 ? `${Math.round(pct)}%` : `${pct.toFixed(1)}%`;
+      pctText.textContent = pct <= 0 ? '0%' : pct >= 10 ? `${Math.round(pct)}%` : `${pct.toFixed(1)}%`;
       pctText.style.display = currentSettings.showPercentText ? '' : 'none';
     }
 
@@ -3165,43 +3232,75 @@
   /**
    * 扫描页面上全部输入框底栏并刷新上下文统计（使用 getElementsByClassName 规避其他插件对 querySelectorAll 的劫持）
    */
+  let remoteFetchInFlight = false;
   async function syncAllComposerFooters(fetchRemote = true) {
     if (!document.body) return;
     ensureStylesInjected();
 
     const footers = Array.from(document.body.getElementsByClassName('agy-composer-footer'));
     let mountedCount = 0;
-    let detectedCid = '';
+    let visibleDetectedCid = '';
+    let hasVisibleFooter = false;
+    let fallbackDetectedCid = '';
+    let needsImmediateRemoteFetch = false;
 
     for (const footerEl of footers) {
-      const { conversationId } = extractComposerContext(footerEl);
-      if (conversationId && !detectedCid) {
-        detectedCid = conversationId;
-      }
-      const cacheKey = conversationId || '__empty__';
+      if (!document.body.contains(footerEl)) continue;
+      const initialCtx = extractComposerContext(footerEl);
+      let activeCid = initialCtx.conversationId;
+      let activeModel = initialCtx.modelLabel;
 
-      if (fetchRemote && currentSettings.enabled) {
-        const resp = await callHostRpc('usage.get', { conversationId });
-        if (resp && resp.ok && resp.usage) {
-          usageCache.set(cacheKey, resp.usage);
-          if (resp.settings) {
-            currentSettings = Object.assign({}, currentSettings, resp.settings);
+      if (activeCid) {
+        if (fetchRemote && currentSettings.enabled) {
+          const resp = await callHostRpc('usage.get', { conversationId: activeCid });
+          if (resp && resp.ok && resp.usage) {
+            const respCid = String(resp.usage.conversationId || '').trim();
+            if (!respCid || respCid === activeCid) {
+              usageCache.set(activeCid, resp.usage);
+            }
+            if (resp.settings) {
+              currentSettings = Object.assign({}, currentSettings, resp.settings);
+            }
+          } else if (!usageCache.has(activeCid) && window.__CONTEXT_RING_SEED_USAGE__) {
+            const seed = window.__CONTEXT_RING_SEED_USAGE__;
+            if (seed && seed.conversationId && seed.conversationId === activeCid) {
+              usageCache.set(activeCid, seed);
+            }
           }
-        } else if (!usageCache.has(cacheKey) && window.__CONTEXT_RING_SEED_USAGE__) {
-          const seed = window.__CONTEXT_RING_SEED_USAGE__;
-          if (!conversationId || !seed.conversationId || seed.conversationId === conversationId) {
-            usageCache.set(cacheKey, seed);
-          }
+
+          // RPC 异步返回后重新核验当前输入框会话 ID，防止切换会话瞬间旧请求回写覆盖新空白窗口
+          if (!document.body.contains(footerEl)) continue;
+          const latestCtx = extractComposerContext(footerEl);
+          activeCid = latestCtx.conversationId;
+          activeModel = latestCtx.modelLabel || activeModel;
+        } else if (currentSettings.enabled && !usageCache.has(activeCid)) {
+          needsImmediateRemoteFetch = true;
         }
       }
 
-      const cachedUsage = usageCache.get(cacheKey) || null;
-      if (mountOrUpdateFooter(footerEl, cachedUsage)) {
+      const visible = isElementVisible(footerEl);
+      if (visible) {
+        if (!hasVisibleFooter) {
+          hasVisibleFooter = true;
+          visibleDetectedCid = activeCid;
+        } else if (!visibleDetectedCid && activeCid) {
+          visibleDetectedCid = activeCid;
+        }
+      } else if (!fallbackDetectedCid && activeCid) {
+        fallbackDetectedCid = activeCid;
+      }
+
+      // 空白新会话（activeCid 为空）严格渲染 0%，绝不读取任何缓存或历史会话
+      const renderUsage = activeCid
+        ? usageCache.get(activeCid) || createEmptyWidgetUsage(activeModel)
+        : createEmptyWidgetUsage(activeModel);
+      if (mountOrUpdateFooter(footerEl, renderUsage)) {
         mountedCount++;
       }
     }
 
-    if (!detectedCid) {
+    let detectedCid = hasVisibleFooter ? visibleDetectedCid : fallbackDetectedCid;
+    if (!detectedCid && !hasVisibleFooter) {
       const match = String(location.pathname || '').match(/^\/c\/([a-zA-Z0-9_-]{8,128})/);
       if (match) detectedCid = match[1];
     }
@@ -3209,11 +3308,20 @@
     window.__CONTEXT_RING_MOUNTED_COUNT__ = mountedCount;
     window.__CONTEXT_RING_ACTIVE_CID__ = detectedCid;
 
-    if (activeFooterEl && document.body.contains(activeFooterEl)) {
+    if (activeFooterEl && !document.body.contains(activeFooterEl)) {
+      closePopoverNow();
+    } else if (activeFooterEl) {
       renderPopoverData(activeFooterEl, false);
     }
     if (isSettingsModalOpen() && settingsPreviewPct === null) {
       renderSettingsPageContent();
+    }
+
+    if (needsImmediateRemoteFetch && !fetchRemote && !remoteFetchInFlight) {
+      remoteFetchInFlight = true;
+      void syncAllComposerFooters(true).finally(() => {
+        remoteFetchInFlight = false;
+      });
     }
   }
 
@@ -3243,8 +3351,14 @@
     }
   }
 
+  function onRouteNavigation() {
+    void syncAllComposerFooters(true);
+  }
+
   document.addEventListener('pointerdown', onDocumentPointerDown);
   document.addEventListener('keydown', onDocumentKeyDown);
+  window.addEventListener('popstate', onRouteNavigation);
+  window.addEventListener('hashchange', onRouteNavigation);
 
   let domSyncTimer = null;
   const domObserver = new MutationObserver((records) => {
@@ -3305,6 +3419,8 @@
     domObserver.disconnect();
     document.removeEventListener('pointerdown', onDocumentPointerDown);
     document.removeEventListener('keydown', onDocumentKeyDown);
+    window.removeEventListener('popstate', onRouteNavigation);
+    window.removeEventListener('hashchange', onRouteNavigation);
 
     for (const item of pendingRpc.values()) {
       clearTimeout(item.timer);

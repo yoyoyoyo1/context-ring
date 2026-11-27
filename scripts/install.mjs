@@ -155,7 +155,7 @@ function syncWslDistributions(action, pluginSourceDir) {
 /**
  * 若当前客户端已开启远程调试端口，立即向运行中窗口热注入或热卸载组件（无需重启即可预览）
  */
-async function syncRunningWindowsOverCdp(mode, settingsSnapshot, version) {
+async function syncRunningWindowsOverCdp(mode, settingsSnapshot, version, options = {}) {
   const portFile = getDevToolsPortFilePath();
   if (!fs.existsSync(portFile)) {
     return { reachable: false, updatedWindows: 0 };
@@ -183,7 +183,19 @@ async function syncRunningWindowsOverCdp(mode, settingsSnapshot, version) {
       try {
         client = await connectCdpSocket(target.webSocketDebuggerUrl, 2500);
         if (mode === 'install') {
-          const seedUsage = getConversationUsage('');
+          let targetCid = '';
+          try {
+            const parsedUrl = new URL(target.url || '');
+            const match = parsedUrl.pathname.match(/^\/c\/([a-zA-Z0-9_-]{8,128})/);
+            if (match) targetCid = match[1];
+          } catch {}
+          // 仅对明确处于具体会话路由的窗口注入对应会话种子，空白新窗口绝不带入历史上下文
+          const seedUsage = targetCid
+            ? getConversationUsage(targetCid, {
+                knownDistrosFile: options.knownDistrosFile || '',
+                allowLatestFallback: false,
+              })
+            : null;
           const source =
             `window.__CONTEXT_RING_FORCE_RELOAD__ = true;\n` +
             `window.__CONTEXT_RING_SEED_USAGE__ = ${JSON.stringify(seedUsage)};\n` +
@@ -295,7 +307,9 @@ async function runInstall() {
   }
 
   console.log('\n=== [4/4] 检查运行中窗口并尝试免重启热挂载 ===');
-  const hotRes = await syncRunningWindowsOverCdp('install', currentSettings, version);
+  const hotRes = await syncRunningWindowsOverCdp('install', currentSettings, version, {
+    knownDistrosFile: wslMetaFile,
+  });
   if (hotRes.reachable && hotRes.updatedWindows > 0) {
     console.log(
       `  -> 已实时挂载到 ${hotRes.updatedWindows} 个运行中的窗口（重启客户端后 Sidecar 监控工坊也将完整就绪）`
