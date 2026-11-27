@@ -33,7 +33,7 @@
 ### Windows
 
 ```powershell
-git clone https://github.com/<你的GitHub用户名>/context-ring.git
+git clone https://github.com/yoyoyoyo1/context-ring.git
 cd context-ring
 .\install.cmd
 ```
@@ -43,7 +43,7 @@ cd context-ring
 ### macOS / Linux / WSL2
 
 ```bash
-git clone https://github.com/<你的GitHub用户名>/context-ring.git
+git clone https://github.com/yoyoyoyo1/context-ring.git
 cd context-ring
 sh ./install.sh
 ```
@@ -71,14 +71,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1 -KeepSetting
 
 ## 推荐给朋友的一键口令模板
 
-把仓库推到你的 GitHub 后，可以直接复制下面这段发给朋友（记得把 `<你的GitHub用户名>` 换成你自己的）：
+可以直接复制下面这段发给朋友一键安装：
 
 ```markdown
 推荐一个 Antigravity 输入框上下文监控插件 **Context Ring**：
 不改客户端 `app.asar`（客户端自动更新不失效），支持把上下文进度切换成 **玻璃瓶装水晃动、盘圈毛毛虫、双层甜甜圈、极简细环、液态胶囊** 5 种样式，悬停能看缓存命中率、切 512k/1M 上限、调思考深度和一键直接执行 `/compact`，还兼容 WSL2。
 
 安装命令（Windows）：
-git clone https://github.com/<你的GitHub用户名>/context-ring.git
+git clone https://github.com/yoyoyoyo1/context-ring.git
 cd context-ring
 .\install.cmd
 

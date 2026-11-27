@@ -4,6 +4,11 @@
   "description": "面向 Google Antigravity 2.0 的零侵入上下文监控插件：支持细环、甜甜圈、毛毛虫、玻璃水瓶与液态胶囊多形态切换，兼容 Windows / macOS / Linux / WSL2。",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yoyoyoyo1/context-ring.git"
+  },
+  "homepage": "https://github.com/yoyoyoyo1/context-ring#readme",
   "engines": {
     "node": ">=20.0.0"
   },
