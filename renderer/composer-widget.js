@@ -1749,7 +1749,7 @@
         : dark
           ? '#e4e4e7'
           : '#3f3f46';
-    const fontSize = badge === 'W' ? '6.4' : '7.4';
+    const fontSize = badge === 'W' ? '6.4' : '6.8';
     const badgeText = `<text x="9" y="9" dy="0.35em" text-anchor="middle" fill="${textColor}" font-size="${fontSize}" font-weight="750" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif">${badge}</text>`;
 
     if (pct <= 0) {
@@ -1761,7 +1761,7 @@
   }
 
   /**
-   * 生成模型名左侧的「W 周额度 + 5 五小时额度」双圆环 HTML 与悬停说明文案
+   * 生成模型名左侧的「W 周额度 + H 五小时额度」双圆环 HTML 与悬停说明文案
    */
   function buildQuotaPairVisual(familyName, sizePx, dark) {
     const pair = resolveQuotaPairForFamily(familyName);
@@ -1770,7 +1770,7 @@
     }
 
     const weeklySvg = buildSingleQuotaRingSvg(pair.weekly, 'W', sizePx, dark);
-    const fiveHourSvg = buildSingleQuotaRingSvg(pair.fiveHour, '5', sizePx, dark);
+    const fiveHourSvg = buildSingleQuotaRingSvg(pair.fiveHour, 'H', sizePx, dark);
     const tipParts = [];
     if (pair.weekly) {
       tipParts.push(
@@ -2310,7 +2310,7 @@
         menuEl.dataset.sig = familiesSig;
         const headHtml =
           quotaGroupsCache.length > 0
-            ? `<div class="cr-model-menu-head"><span>W 周 / 5 五小时</span><span>档位</span></div>`
+            ? `<div class="cr-model-menu-head"><span>W 周 / H 五小时</span><span>档位</span></div>`
             : '';
         menuEl.innerHTML =
           headHtml +
