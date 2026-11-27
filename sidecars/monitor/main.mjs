@@ -228,6 +228,18 @@ async function main() {
         return;
       }
 
+      if (req.method === 'POST' && urlObj.pathname === '/api/compact') {
+        try {
+          const result = await cdpHost.triggerCompact();
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify(result));
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, error: err?.message || String(err) }));
+        }
+        return;
+      }
+
       if (req.method === 'POST' && urlObj.pathname === '/api/reconfigure-shortcuts') {
         const result = configureClientLaunchers({ home: paths.home, dataDir: paths.dataDir });
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });

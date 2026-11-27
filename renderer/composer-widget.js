@@ -679,28 +679,60 @@
         display: inline-flex;
         align-items: center;
         gap: 4px;
-        border: 1px solid rgba(10, 10, 12, 0.1);
-        background: transparent;
-        color: var(--secondary-foreground, #3f3f46);
+        border: 1px solid rgba(47, 117, 195, 0.24);
+        background: rgba(47, 117, 195, 0.08);
+        color: #1d5ca3;
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         font-size: 10.5px;
         font-weight: 600;
         padding: 4px 9px;
         border-radius: 8px;
         cursor: pointer;
-        transition: background-color 0.14s ease, color 0.14s ease;
+        transition: background-color 0.14s ease, border-color 0.14s ease, color 0.14s ease;
       }
       #${POPOVER_ID}.is-dark .cr-compact-btn {
-        border-color: rgba(255, 255, 255, 0.12);
-        color: #d4d4d8;
+        border-color: rgba(96, 165, 250, 0.28);
+        background: rgba(96, 165, 250, 0.12);
+        color: #93c5fd;
       }
-      .cr-compact-btn:hover {
-        background: var(--secondary, rgba(10, 10, 12, 0.06));
-        color: var(--foreground, #0a0a0c);
+      .cr-compact-btn:hover:not(:disabled) {
+        background: rgba(47, 117, 195, 0.15);
+        border-color: rgba(47, 117, 195, 0.38);
+        color: #164984;
       }
-      #${POPOVER_ID}.is-dark .cr-compact-btn:hover {
-        background: rgba(255, 255, 255, 0.09);
-        color: #ffffff;
+      #${POPOVER_ID}.is-dark .cr-compact-btn:hover:not(:disabled) {
+        background: rgba(96, 165, 250, 0.2);
+        border-color: rgba(96, 165, 250, 0.44);
+        color: #dbeafe;
+      }
+      .cr-compact-btn:disabled {
+        opacity: 0.65;
+        cursor: wait;
+      }
+      .cr-compact-btn.is-done {
+        border-color: rgba(16, 185, 129, 0.34);
+        background: rgba(16, 185, 129, 0.12);
+        color: #059669;
+      }
+      #${POPOVER_ID}.is-dark .cr-compact-btn.is-done {
+        border-color: rgba(52, 211, 153, 0.38);
+        background: rgba(16, 185, 129, 0.18);
+        color: #6ee7b7;
+      }
+      .cr-compact-btn.is-warn {
+        border-color: rgba(217, 119, 6, 0.34);
+        background: rgba(217, 119, 6, 0.12);
+        color: #b45309;
+      }
+      #${POPOVER_ID}.is-dark .cr-compact-btn.is-warn {
+        border-color: rgba(251, 191, 36, 0.36);
+        background: rgba(217, 119, 6, 0.18);
+        color: #fcd34d;
+      }
+      .cr-compact-btn svg {
+        width: 11px;
+        height: 11px;
+        flex-shrink: 0;
       }
 
       /* 独立样式与监控设置页面（无全屏模糊，确保 60fps 流畅切换） */
@@ -1212,6 +1244,122 @@
     return null;
   }
 
+  let compactSubmitting = false;
+
+  /**
+   * 从当前输入框 React Fiber 读取原生 AgentInputBox 提交控制器与 /compact 指令定义
+   */
+  function getComposerCompactController(footerEl) {
+    const card = footerEl?.closest?.('.surface-composer-card');
+    const candidates = [
+      card?.querySelector?.('[contenteditable="true"]'),
+      footerEl,
+      document.querySelector('.surface-composer-card [contenteditable="true"]'),
+    ].filter(Boolean);
+
+    for (const node of candidates) {
+      const fiberKey = Object.keys(node).find(
+        (key) => key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$')
+      );
+      if (!fiberKey) continue;
+
+      let cursor = node[fiberKey];
+      let depth = 0;
+      while (cursor && depth < 42) {
+        const props = cursor.memoizedProps;
+        if (props && typeof props.handleSubmit === 'function') {
+          const slashItems = Array.isArray(props.slashCommandItems) ? props.slashCommandItems : [];
+          const compactItem =
+            slashItems.find((item) => item?.info?.name === 'compact' || item?.title === 'compact') || null;
+
+          return {
+            handleSubmit: props.handleSubmit,
+            cascadeId: typeof props.cascadeId === 'string' ? props.cascadeId : '',
+            isRunning: Boolean(props.isRunning),
+            canQueue: props.canQueue !== false,
+            compactItem,
+          };
+        }
+        cursor = cursor.return;
+        depth++;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * 直接触发当前会话的原生 /compact 上下文压缩（保留输入框草稿；失败时优雅降级为复制指令）
+   */
+  async function executeCompactCommand(footerEl) {
+    if (compactSubmitting) {
+      return { ok: false, busy: true, message: '压缩中...' };
+    }
+
+    const ctrl = getComposerCompactController(footerEl);
+    if (!ctrl) {
+      navigator.clipboard?.writeText('/compact').catch(() => {});
+      return { ok: false, fallbackCopied: true, message: '已复制 /compact' };
+    }
+
+    // 空白新会话没有历史消息，避免误触发空会话提交
+    if (!ctrl.cascadeId) {
+      return { ok: false, warn: true, message: '暂无会话历史' };
+    }
+
+    // 运行中且不支持排队时提示等待本轮完成
+    if (ctrl.isRunning && !ctrl.canQueue) {
+      return { ok: false, warn: true, message: '运行中，请稍候' };
+    }
+
+    // 优先复用客户端实时下发的 SlashCommandInfo 原生 protobuf 对象
+    const slashInfo = ctrl.compactItem?.info || {
+      $typeName: 'exa.codeium_common_pb.SlashCommandInfo',
+      name: 'compact',
+      modelFacingText: '',
+      type: 1,
+      icon: 'collapse_all',
+      displayName: '',
+      logo: '',
+    };
+
+    const items = [
+      {
+        $typeName: 'exa.codeium_common_pb.TextOrScopeItem',
+        chunk: {
+          case: 'item',
+          value: {
+            $typeName: 'exa.codeium_common_pb.ContextScopeItem',
+            scopeItem: {
+              case: 'slashCommand',
+              value: {
+                $typeName: 'exa.codeium_common_pb.SlashCommandScopeItem',
+                info: slashInfo,
+                argumentValues: {},
+              },
+            },
+          },
+        },
+      },
+    ];
+
+    compactSubmitting = true;
+    try {
+      // 传入空操作 clearEditor，避免清空用户当前正在输入的未发送草稿
+      await ctrl.handleSubmit(items, [], () => {});
+      return {
+        ok: true,
+        queued: ctrl.isRunning,
+        message: ctrl.isRunning ? '✓ 已排队压缩' : '✓ 已执行压缩',
+      };
+    } catch {
+      navigator.clipboard?.writeText('/compact').catch(() => {});
+      return { ok: false, fallbackCopied: true, message: '已复制 /compact' };
+    } finally {
+      compactSubmitting = false;
+    }
+  }
+
   /**
    * 从输入框节点向上提取当前会话 ID 与模型名称（React Fiber + URL 兜底）
    */
@@ -1420,7 +1568,14 @@
         <div class="cr-limit-group" data-role="limit-group">
           ${LIMIT_OPTIONS.map((opt) => `<button type="button" class="cr-limit-btn" data-limit="${opt.value}">${opt.label}</button>`).join('')}
         </div>
-        <button type="button" class="cr-compact-btn" data-role="compact-btn" title="复制 /compact 命令压缩上下文">/compact</button>
+        <button type="button" class="cr-compact-btn" data-role="compact-btn" title="点击直接执行 /compact 压缩当前会话上下文">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 3.5L8 6.5L11 3.5" />
+            <path d="M5 12.5L8 9.5L11 12.5" />
+            <path d="M2.5 8H13.5" />
+          </svg>
+          <span data-role="compact-label">/compact</span>
+        </button>
       </div>
     `;
 
@@ -1504,15 +1659,42 @@
       applySettingPatch({ contextLimit: nextLimit });
     });
 
-    // 复制 /compact 指令
-    pop.querySelector('[data-role="compact-btn"]').addEventListener('click', (e) => {
+    // 点击直接执行 /compact 压缩当前会话（不可用时自动降级复制）
+    let compactResetTimer = null;
+    pop.querySelector('[data-role="compact-btn"]').addEventListener('click', async (e) => {
       e.stopPropagation();
       const btn = e.currentTarget;
-      navigator.clipboard?.writeText('/compact').catch(() => {});
-      btn.textContent = '✓ 已复制';
-      setTimeout(() => {
-        btn.textContent = '/compact';
-      }, 1300);
+      const labelEl = btn.querySelector('[data-role="compact-label"]') || btn;
+      if (btn.disabled) return;
+
+      if (compactResetTimer) {
+        clearTimeout(compactResetTimer);
+        compactResetTimer = null;
+      }
+
+      btn.disabled = true;
+      btn.classList.remove('is-done', 'is-warn');
+      labelEl.textContent = '压缩中...';
+
+      const targetFooter = activeFooterEl || lastOpenedFooterEl;
+      const result = await executeCompactCommand(targetFooter);
+
+      btn.disabled = false;
+      labelEl.textContent = result.message || '/compact';
+      if (result.ok) {
+        btn.classList.add('is-done');
+        compactResetTimer = setTimeout(() => {
+          btn.classList.remove('is-done', 'is-warn');
+          labelEl.textContent = '/compact';
+          closePopoverNow();
+        }, 720);
+      } else {
+        if (result.warn) btn.classList.add('is-warn');
+        compactResetTimer = setTimeout(() => {
+          btn.classList.remove('is-done', 'is-warn');
+          labelEl.textContent = '/compact';
+        }, 1600);
+      }
     });
 
     document.body.appendChild(pop);
@@ -2103,6 +2285,18 @@
   void syncAllComposerFooters(true);
 
   /**
+   * 暴露给 Sidecar 面板远程调用的一键执行 /compact 入口
+   */
+  window.__CONTEXT_RING_TRIGGER_COMPACT__ = async function triggerCompactFromHost() {
+    const targetFooter =
+      activeFooterEl ||
+      lastOpenedFooterEl ||
+      (document.body && document.body.getElementsByClassName('agy-composer-footer')[0]) ||
+      null;
+    return executeCompactCommand(targetFooter);
+  };
+
+  /**
    * 完整清理函数（供热更新或插件卸载时无痕剥离所有 DOM 与事件）
    */
   window.__CONTEXT_RING_CLEANUP__ = function cleanupContextRing() {
@@ -2128,6 +2322,7 @@
       }
     }
 
+    delete window.__CONTEXT_RING_TRIGGER_COMPACT__;
     window.__CONTEXT_RING_INSTALLED__ = false;
     window.__CONTEXT_RING_MOUNTED_COUNT__ = 0;
   };

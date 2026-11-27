@@ -256,6 +256,9 @@ test('cdp-host & dashboard-ui: 目标识别、注入脚本语法合法性与工�
   assert.ok(injectedSource.includes('effort-rail'));
   assert.ok(injectedSource.includes('cr-gauge-track'));
   assert.ok(injectedSource.includes('agy-context-ring-settings-modal'));
+  assert.ok(injectedSource.includes('getComposerCompactController'));
+  assert.ok(injectedSource.includes('executeCompactCommand'));
+  assert.ok(injectedSource.includes('__CONTEXT_RING_TRIGGER_COMPACT__'));
 
   const html = renderSidecarDashboardHtml({ version: '1.0.0' });
   assert.equal(html.includes('paletteGroup'), false);
@@ -264,4 +267,5 @@ test('cdp-host & dashboard-ui: 目标识别、注入脚本语法合法性与工�
   }
   assert.ok(html.includes('/api/state'));
   assert.ok(html.includes('/api/settings'));
+  assert.ok(html.includes('/api/compact'));
 });
