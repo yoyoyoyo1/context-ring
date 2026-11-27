@@ -3973,9 +3973,16 @@
     if (anchor && anchor.parentElement === targetContainer) {
       const childrenArr = Array.from(targetContainer.children || []);
       const anchorIdx = childrenArr.indexOf(anchor);
-      const nextSibling = anchorIdx >= 0 ? childrenArr[anchorIdx + 1] || null : null;
-      if (quotaHostEl.parentElement !== targetContainer || nextSibling !== quotaHostEl) {
-        targetContainer.insertBefore(quotaHostEl, nextSibling);
+      const currentIdx = childrenArr.indexOf(quotaHostEl);
+      // 仅在未挂载到目标容器或意外排到模型按钮左侧时插入，避免与 agy-powertools 等同级插件互相抢位抖动
+      const needsMove = quotaHostEl.parentElement !== targetContainer || (anchorIdx >= 0 && currentIdx < anchorIdx);
+      if (needsMove) {
+        let insertIdx = anchorIdx + 1;
+        while (insertIdx < childrenArr.length && childrenArr[insertIdx]?.hasAttribute?.('data-agy-powertools-root')) {
+          insertIdx++;
+        }
+        const refNode = insertIdx < childrenArr.length ? childrenArr[insertIdx] : null;
+        targetContainer.insertBefore(quotaHostEl, refNode);
       }
     } else if (quotaHostEl.parentElement !== targetContainer) {
       targetContainer.appendChild(quotaHostEl);
