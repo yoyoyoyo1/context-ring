@@ -36,6 +36,7 @@
 
   const STYLE_TAG_ID = 'agy-context-ring-styles';
   const POPOVER_ID = 'agy-context-ring-popover';
+  const QUOTA_TIP_ID = 'agy-context-ring-quota-tip';
   const SETTINGS_MODAL_ID = 'agy-context-ring-settings-modal';
   const HOST_CLASS = 'agy-context-ring-host';
 
@@ -591,7 +592,7 @@
       .cr-quota-pair {
         display: inline-flex;
         align-items: center;
-        gap: 2.5px;
+        gap: 3px;
         flex-shrink: 0;
       }
       .cr-quota-pair:empty {
@@ -601,14 +602,76 @@
         display: block;
         flex-shrink: 0;
       }
+      /* 悬停秒出迷你额度气泡（独立挂于顶层避免被下拉菜单滚动容器裁切） */
+      #${QUOTA_TIP_ID} {
+        position: fixed;
+        z-index: 2147483647;
+        pointer-events: none;
+        padding: 6px 9px;
+        border-radius: 10px;
+        background: var(--card, #ffffff);
+        color: var(--foreground, #0a0a0c);
+        box-shadow: 0 0 0 1px rgba(10, 10, 12, 0.09), 0 10px 24px -4px rgba(10, 10, 12, 0.16), 0 2px 6px rgba(10, 10, 12, 0.05);
+        font-family: "Google Sans Flex", "Google Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-size: 10.5px;
+        line-height: 1.35;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        opacity: 0;
+        transform: translateY(3px) scale(0.98);
+        transition: opacity 0.1s ease, transform 0.12s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      #${QUOTA_TIP_ID}.is-dark {
+        background: var(--card, #1d2028);
+        color: #f4f4f5;
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 14px 30px rgba(0, 0, 0, 0.56);
+      }
+      #${QUOTA_TIP_ID}.is-open {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
+      .cr-qtip-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        white-space: nowrap;
+      }
+      .cr-qtip-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 999px;
+        flex-shrink: 0;
+      }
+      .cr-qtip-name {
+        color: var(--muted-foreground, #71717a);
+        font-weight: 500;
+        min-width: 34px;
+      }
+      #${QUOTA_TIP_ID}.is-dark .cr-qtip-name {
+        color: #a1a1aa;
+      }
+      .cr-qtip-pct {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        min-width: 28px;
+      }
+      .cr-qtip-reset {
+        color: var(--muted-foreground, #71717a);
+        font-size: 10px;
+      }
+      #${QUOTA_TIP_ID}.is-dark .cr-qtip-reset {
+        color: #a1a1aa;
+      }
       /* 模型系列下拉浮层（默认向上展开避免触碰窗口底边） */
       .cr-model-menu {
         position: absolute;
         right: 0;
         bottom: calc(100% + 6px);
         z-index: 30;
-        width: 248px;
-        max-height: 252px;
+        width: 256px;
+        max-height: 256px;
         overflow-y: auto;
         padding: 4px;
         border-radius: 12px;
@@ -1666,13 +1729,13 @@
   }
 
   /**
-   * 绘制单个微型剩余额度圆环 SVG（0% 时展示淡红警报底环 + 圆心红点）
+   * 绘制单个表盘风微型剩余额度圆环 SVG（中心内嵌 W / 5 微标，0% 时淡红底环 + 红字警示）
    */
-  function buildSingleQuotaRingSvg(bucket, sizePx, dark) {
+  function buildSingleQuotaRingSvg(bucket, badge, sizePx, dark) {
     if (!bucket) return '';
     const pct = Math.max(0, Math.min(100, Number(bucket.pct || 0)));
     const color = resolveQuotaRingColor(pct);
-    const r = 5.0;
+    const r = 7.1;
     const c = 2 * Math.PI * r;
     const trackColor =
       pct <= 0
@@ -1680,26 +1743,34 @@
         : dark
           ? 'rgba(255, 255, 255, 0.16)'
           : 'rgba(113, 113, 122, 0.22)';
+    const textColor =
+      pct < 15
+        ? '#ef4444'
+        : dark
+          ? '#e4e4e7'
+          : '#3f3f46';
+    const fontSize = badge === 'W' ? '6.4' : '7.4';
+    const badgeText = `<text x="9" y="9" dy="0.35em" text-anchor="middle" fill="${textColor}" font-size="${fontSize}" font-weight="750" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif">${badge}</text>`;
 
     if (pct <= 0) {
-      return `<svg class="cr-quota-ring-svg" width="${sizePx}" height="${sizePx}" viewBox="0 0 14 14" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="${r}" stroke="${trackColor}" stroke-width="1.85"/><circle cx="7" cy="7" r="1.5" fill="#ef4444"/></svg>`;
+      return `<svg class="cr-quota-ring-svg" width="${sizePx}" height="${sizePx}" viewBox="0 0 18 18" fill="none" aria-hidden="true"><circle cx="9" cy="9" r="${r}" stroke="${trackColor}" stroke-width="1.9"/>${badgeText}</svg>`;
     }
 
     const dash = ((pct / 100) * c).toFixed(2);
-    return `<svg class="cr-quota-ring-svg" width="${sizePx}" height="${sizePx}" viewBox="0 0 14 14" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="${r}" stroke="${trackColor}" stroke-width="1.85"/><circle cx="7" cy="7" r="${r}" stroke="${color}" stroke-width="1.85" stroke-dasharray="${dash} ${c.toFixed(2)}" stroke-linecap="round" transform="rotate(-90 7 7)"/></svg>`;
+    return `<svg class="cr-quota-ring-svg" width="${sizePx}" height="${sizePx}" viewBox="0 0 18 18" fill="none" aria-hidden="true"><circle cx="9" cy="9" r="${r}" stroke="${trackColor}" stroke-width="1.9"/><circle cx="9" cy="9" r="${r}" stroke="${color}" stroke-width="1.9" stroke-dasharray="${dash} ${c.toFixed(2)}" stroke-linecap="round" transform="rotate(-90 9 9)"/>${badgeText}</svg>`;
   }
 
   /**
-   * 生成模型名左侧的「周额度（左）+ 5小时额度（右）」双圆环 HTML 与悬停说明文案
+   * 生成模型名左侧的「W 周额度 + 5 五小时额度」双圆环 HTML 与悬停说明文案
    */
   function buildQuotaPairVisual(familyName, sizePx, dark) {
     const pair = resolveQuotaPairForFamily(familyName);
     if (!pair || (!pair.weekly && !pair.fiveHour)) {
-      return { html: '', tooltip: '' };
+      return { html: '', tooltip: '', pair: null };
     }
 
-    const weeklySvg = buildSingleQuotaRingSvg(pair.weekly, sizePx, dark);
-    const fiveHourSvg = buildSingleQuotaRingSvg(pair.fiveHour, sizePx, dark);
+    const weeklySvg = buildSingleQuotaRingSvg(pair.weekly, 'W', sizePx, dark);
+    const fiveHourSvg = buildSingleQuotaRingSvg(pair.fiveHour, '5', sizePx, dark);
     const tipParts = [];
     if (pair.weekly) {
       tipParts.push(
@@ -1714,8 +1785,75 @@
 
     return {
       html: `${weeklySvg}${fiveHourSvg}`,
-      tooltip: tipParts.join(' · '),
+      tooltip: tipParts.join(' | '),
+      pair,
     };
+  }
+
+  /**
+   * 获取或创建全局唯一的悬停秒出额度迷你气泡
+   */
+  function getOrCreateQuotaTip() {
+    let tip = document.getElementById(QUOTA_TIP_ID);
+    if (tip) return tip;
+    tip = document.createElement('div');
+    tip.id = QUOTA_TIP_ID;
+    tip.setAttribute('role', 'tooltip');
+    document.body.appendChild(tip);
+    return tip;
+  }
+
+  /**
+   * 立即隐藏迷你额度气泡
+   */
+  function hideQuotaTip() {
+    const tip = document.getElementById(QUOTA_TIP_ID);
+    if (tip) tip.classList.remove('is-open');
+  }
+
+  /**
+   * 在双圆环正上方秒出展示该模型的周额度与 5 小时额度明细气泡
+   */
+  function showQuotaTip(anchorEl, familyName) {
+    const pair = resolveQuotaPairForFamily(familyName);
+    if (!anchorEl || !pair || (!pair.weekly && !pair.fiveHour)) {
+      hideQuotaTip();
+      return;
+    }
+
+    const tip = getOrCreateQuotaTip();
+    tip.classList.toggle('is-dark', isDarkTheme());
+
+    const rows = [];
+    if (pair.weekly) {
+      const wColor = resolveQuotaRingColor(pair.weekly.pct);
+      const pctStyle = pair.weekly.pct < 15 ? ` style="color:${wColor}"` : '';
+      rows.push(
+        `<div class="cr-qtip-row"><span class="cr-qtip-dot" style="background:${wColor}"></span><span class="cr-qtip-name">周额度</span><span class="cr-qtip-pct"${pctStyle}>${pair.weekly.pct}%</span>${pair.weekly.resetText ? `<span class="cr-qtip-reset">${escapeHtml(pair.weekly.resetText)}</span>` : ''}</div>`
+      );
+    }
+    if (pair.fiveHour) {
+      const hColor = resolveQuotaRingColor(pair.fiveHour.pct);
+      const pctStyle = pair.fiveHour.pct < 15 ? ` style="color:${hColor}"` : '';
+      rows.push(
+        `<div class="cr-qtip-row"><span class="cr-qtip-dot" style="background:${hColor}"></span><span class="cr-qtip-name">5h额度</span><span class="cr-qtip-pct"${pctStyle}>${pair.fiveHour.pct}%</span>${pair.fiveHour.resetText ? `<span class="cr-qtip-reset">${escapeHtml(pair.fiveHour.resetText)}</span>` : ''}</div>`
+      );
+    }
+
+    tip.innerHTML = rows.join('');
+    tip.classList.add('is-open');
+
+    const rect = anchorEl.getBoundingClientRect();
+    const tipW = tip.offsetWidth || 180;
+    const tipH = tip.offsetHeight || 46;
+    let left = rect.left + rect.width / 2 - tipW / 2;
+    left = Math.max(8, Math.min(window.innerWidth - tipW - 8, left));
+    let top = rect.top - tipH - 7;
+    if (top < 8) {
+      top = rect.bottom + 7;
+    }
+    tip.style.left = `${Math.round(left)}px`;
+    tip.style.top = `${Math.round(top)}px`;
   }
 
   /**
@@ -2056,6 +2194,7 @@
    * 关闭悬浮卡片内的模型系列下拉菜单
    */
   function closeModelMenu(pop) {
+    hideQuotaTip();
     if (!pop) return;
     const btn = pop.querySelector('[data-role="model-picker-btn"]');
     const menu = pop.querySelector('[data-role="model-menu"]');
@@ -2138,10 +2277,13 @@
     const modelEl = pop.querySelector('[data-role="effort-model"]');
     if (modelEl) modelEl.textContent = controller.family;
 
-    const currentQuota = buildQuotaPairVisual(controller.family, 11.5, dark);
+    const currentQuota = buildQuotaPairVisual(controller.family, 15, dark);
     const currentQuotaSlot = pop.querySelector('[data-role="current-model-quota"]');
-    if (currentQuotaSlot && currentQuotaSlot.innerHTML !== currentQuota.html) {
-      currentQuotaSlot.innerHTML = currentQuota.html;
+    if (currentQuotaSlot) {
+      currentQuotaSlot.setAttribute('data-quota-family', controller.family);
+      if (currentQuotaSlot.innerHTML !== currentQuota.html) {
+        currentQuotaSlot.innerHTML = currentQuota.html;
+      }
     }
 
     const pickerBtn = pop.querySelector('[data-role="model-picker-btn"]');
@@ -2149,14 +2291,14 @@
       const canSwitchModel = controller.families.length > 1;
       pickerBtn.classList.toggle('is-static', !canSwitchModel);
       pickerBtn.disabled = !canSwitchModel;
-      const baseTitle = `当前模型：${controller.selectedLabel || controller.family}`;
-      const quotaSuffix = currentQuota.tooltip ? `\n${currentQuota.tooltip}` : '';
-      pickerBtn.title = canSwitchModel
-        ? `${baseTitle}${quotaSuffix}\n（点击切换模型系列）`
-        : `${baseTitle}${quotaSuffix}`;
+      pickerBtn.removeAttribute('title');
+      pickerBtn.setAttribute(
+        'aria-label',
+        `${controller.selectedLabel || controller.family}${currentQuota.tooltip ? ` (${currentQuota.tooltip})` : ''}`
+      );
     }
 
-    // 增量渲染去重后的模型系列列表（左侧双圆环展示周额度与 5h 额度）
+    // 增量渲染去重后的模型系列列表（左侧 W / 5 双圆环展示周额度与 5h 额度）
     const menuEl = pop.querySelector('[data-role="model-menu"]');
     if (menuEl) {
       const familiesSig = [
@@ -2168,7 +2310,7 @@
         menuEl.dataset.sig = familiesSig;
         const headHtml =
           quotaGroupsCache.length > 0
-            ? `<div class="cr-model-menu-head"><span>周 · 5h 剩余额度</span><span>档位</span></div>`
+            ? `<div class="cr-model-menu-head"><span>W 周 / 5 五小时</span><span>档位</span></div>`
             : '';
         menuEl.innerHTML =
           headHtml +
@@ -2176,14 +2318,11 @@
             .map((item) => {
               const levelHint = item.levels.length > 1 ? `${item.levels.length}档` : '';
               const safeFamily = escapeHtml(item.family);
-              const qVis = buildQuotaPairVisual(item.family, 13, dark);
-              const optTitle = qVis.tooltip
-                ? escapeHtml(`${item.family} — ${qVis.tooltip}`)
-                : safeFamily;
+              const qVis = buildQuotaPairVisual(item.family, 16, dark);
               return `
-                <button type="button" class="cr-model-option" role="option" data-family="${safeFamily}" title="${optTitle}">
+                <button type="button" class="cr-model-option" role="option" data-family="${safeFamily}">
                   <span class="cr-model-option-left">
-                    <span class="cr-quota-pair">${qVis.html}</span>
+                    <span class="cr-quota-pair" data-quota-family="${safeFamily}">${qVis.html}</span>
                     <span class="cr-model-option-name">${safeFamily}</span>
                   </span>
                   <span class="cr-model-option-right">
@@ -2377,9 +2516,24 @@
     });
 
     pop.addEventListener('mouseleave', () => {
+      hideQuotaTip();
       if (!popoverPinned) {
         schedulePopoverHide();
       }
+    });
+
+    // 悬停任意模型双圆环时秒出迷你数值气泡（含周额度与 5h 额度百分比与重置倒计时）
+    pop.addEventListener('mouseover', (e) => {
+      const pairEl = e.target.closest?.('.cr-quota-pair[data-quota-family]');
+      if (!pairEl) return;
+      const familyName = pairEl.getAttribute('data-quota-family');
+      if (familyName) showQuotaTip(pairEl, familyName);
+    });
+    pop.addEventListener('mouseout', (e) => {
+      const pairEl = e.target.closest?.('.cr-quota-pair[data-quota-family]');
+      if (!pairEl) return;
+      if (e.relatedTarget && pairEl.contains(e.relatedTarget)) return;
+      hideQuotaTip();
     });
 
     // 点击卡片内部非模型选择器区域时，自动收起展开的模型系列下拉菜单
@@ -2403,8 +2557,10 @@
       toggleModelMenu(pop);
     });
 
-    // 模型系列列表项点击：切换模型系列并智能匹配最接近思考深度
-    pop.querySelector('[data-role="model-menu"]').addEventListener('click', (e) => {
+    // 模型系列列表项点击与滚动处理
+    const modelMenuEl = pop.querySelector('[data-role="model-menu"]');
+    modelMenuEl.addEventListener('scroll', hideQuotaTip, { passive: true });
+    modelMenuEl.addEventListener('click', (e) => {
       e.stopPropagation();
       const optionBtn = e.target.closest('.cr-model-option');
       if (!optionBtn) return;
@@ -3142,6 +3298,7 @@
     pendingRpc.clear();
 
     document.getElementById(SETTINGS_MODAL_ID)?.remove();
+    document.getElementById(QUOTA_TIP_ID)?.remove();
     document.getElementById(POPOVER_ID)?.remove();
     document.getElementById(STYLE_TAG_ID)?.remove();
     if (document.body) {

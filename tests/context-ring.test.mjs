@@ -261,6 +261,8 @@ test('cdp-host & dashboard-ui: 目标识别、注入脚本语法合法性与工�
   assert.ok(injectedSource.includes('retrieveUserQuotaSummary'));
   assert.ok(injectedSource.includes('buildQuotaPairVisual'));
   assert.ok(injectedSource.includes('current-model-quota'));
+  assert.ok(injectedSource.includes('agy-context-ring-quota-tip'));
+  assert.ok(injectedSource.includes('showQuotaTip'));
   assert.ok(injectedSource.includes('cr-gauge-track'));
   assert.ok(injectedSource.includes('agy-context-ring-settings-modal'));
   assert.ok(injectedSource.includes('getComposerCompactController'));
