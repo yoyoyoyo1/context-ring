@@ -525,18 +525,18 @@
         color: var(--muted-foreground, #71717a);
         flex-shrink: 0;
       }
-      /* 右侧按系列去重的紧凑模型切换器 */
+      /* 右侧按系列去重的紧凑模型切换器（左侧带周额度与 5h 额度双圆环） */
       .cr-model-picker {
         position: relative;
-        max-width: 184px;
+        max-width: 210px;
         min-width: 0;
       }
       .cr-effort-model-btn {
         display: inline-flex;
         align-items: center;
-        gap: 4px;
+        gap: 5px;
         max-width: 100%;
-        padding: 2px 6px 2px 7px;
+        padding: 2px 6px 2px 6px;
         border: 1px solid transparent;
         border-radius: 7px;
         background: transparent;
@@ -588,14 +588,27 @@
         transform: rotate(180deg);
         opacity: 1;
       }
+      .cr-quota-pair {
+        display: inline-flex;
+        align-items: center;
+        gap: 2.5px;
+        flex-shrink: 0;
+      }
+      .cr-quota-pair:empty {
+        display: none;
+      }
+      .cr-quota-ring-svg {
+        display: block;
+        flex-shrink: 0;
+      }
       /* 模型系列下拉浮层（默认向上展开避免触碰窗口底边） */
       .cr-model-menu {
         position: absolute;
         right: 0;
         bottom: calc(100% + 6px);
         z-index: 30;
-        width: 218px;
-        max-height: 236px;
+        width: 248px;
+        max-height: 252px;
         overflow-y: auto;
         padding: 4px;
         border-radius: 12px;
@@ -662,6 +675,29 @@
       #${POPOVER_ID}.is-dark .cr-model-option.is-active {
         background: rgba(96, 165, 250, 0.16);
         color: #93c5fd;
+      }
+      .cr-model-menu-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 3px 8px 4px;
+        margin-bottom: 2px;
+        border-bottom: 1px solid rgba(113, 113, 122, 0.12);
+        font-size: 9.5px;
+        font-weight: 600;
+        color: var(--muted-foreground, #71717a);
+        opacity: 0.85;
+        user-select: none;
+      }
+      #${POPOVER_ID}.is-dark .cr-model-menu-head {
+        border-bottom-color: rgba(255, 255, 255, 0.08);
+      }
+      .cr-model-option-left {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        flex: 1;
       }
       .cr-model-option-name {
         overflow: hidden;
@@ -1341,6 +1377,347 @@
       .replace(/'/g, '&#39;');
   }
 
+  // 原生 LanguageServer 配额查询缓存（直接复用页面内已认证 RPC 客户端，零子进程开销）
+  const QUOTA_CACHE_TTL_MS = 25000;
+  let cachedLsClient = null;
+  let quotaGroupsCache = [];
+  let quotaFetchedAt = 0;
+  let quotaFetchPromise = null;
+  let quotaCacheVersion = 0;
+
+  /**
+   * 在对象及其浅层属性中递归检索包含 retrieveUserQuotaSummary 方法的客户端实例
+   */
+  function inspectObjectForQuotaClient(obj, depth) {
+    if (!obj || (typeof obj !== 'object' && typeof obj !== 'function') || depth > 2) {
+      return null;
+    }
+    if (obj === window || obj === document || obj.nodeType) {
+      return null;
+    }
+    if (typeof obj.retrieveUserQuotaSummary === 'function') {
+      return obj;
+    }
+    const proto = Object.getPrototypeOf(obj);
+    if (proto && typeof proto.retrieveUserQuotaSummary === 'function') {
+      return obj;
+    }
+    for (const key of Object.keys(obj)) {
+      let val;
+      try {
+        val = obj[key];
+      } catch {
+        continue;
+      }
+      if (!val || (typeof val !== 'object' && typeof val !== 'function')) continue;
+      if (typeof val.retrieveUserQuotaSummary === 'function') {
+        return val;
+      }
+      if (depth < 2) {
+        const nested = inspectObjectForQuotaClient(val, depth + 1);
+        if (nested) return nested;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 从输入框模型选择器 React Fiber 树向上定位并缓存原生 LanguageServer 客户端
+   */
+  function getLanguageServerClient(footerEl) {
+    if (cachedLsClient && typeof cachedLsClient.retrieveUserQuotaSummary === 'function') {
+      return cachedLsClient;
+    }
+
+    const card = footerEl?.closest?.('.surface-composer-card');
+    const anchor =
+      (card && card.querySelector('[data-testid="model-selector-trigger"]')) ||
+      document.querySelector('[data-testid="model-selector-trigger"]') ||
+      footerEl;
+    if (!anchor) return null;
+
+    const fiberKey = Object.keys(anchor).find(
+      (key) => key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$')
+    );
+    if (!fiberKey) return null;
+
+    let cursor = anchor[fiberKey];
+    let steps = 0;
+    while (cursor && steps < 60) {
+      steps++;
+      let found = inspectObjectForQuotaClient(cursor.memoizedProps, 0);
+      if (!found && cursor.dependencies?.firstContext) {
+        let ctx = cursor.dependencies.firstContext;
+        let ctxSteps = 0;
+        while (ctx && ctxSteps < 30 && !found) {
+          found = inspectObjectForQuotaClient(ctx.memoizedValue, 0);
+          ctx = ctx.next;
+          ctxSteps++;
+        }
+      }
+      if (found) {
+        cachedLsClient = found;
+        return found;
+      }
+      cursor = cursor.return;
+    }
+    return null;
+  }
+
+  /**
+   * 兼容解析 Protobuf Timestamp 对象与 ISO 字符串为毫秒时间戳
+   */
+  function parseQuotaResetTimeMs(resetTime) {
+    if (!resetTime) return NaN;
+    if (typeof resetTime === 'string') return Date.parse(resetTime);
+    if (typeof resetTime === 'number') return resetTime;
+    if (typeof resetTime === 'object' && resetTime.seconds !== undefined) {
+      const sec = Number(resetTime.seconds);
+      const nanos = Number(resetTime.nanos || 0);
+      if (Number.isFinite(sec) && sec > 0) {
+        return sec * 1000 + Math.floor(nanos / 1e6);
+      }
+    }
+    return NaN;
+  }
+
+  /**
+   * 格式化配额重置剩余倒计时文案
+   */
+  function formatQuotaResetCountdown(resetMs) {
+    if (!Number.isFinite(resetMs)) return '';
+    const diffMs = resetMs - Date.now();
+    if (diffMs <= 0) return '即将重置';
+    const totalMin = Math.ceil(diffMs / 60000);
+    const days = Math.floor(totalMin / (24 * 60));
+    const hours = Math.floor((totalMin % (24 * 60)) / 60);
+    const mins = totalMin % 60;
+    if (days > 0) {
+      return hours > 0 ? `${days}天${hours}小时后重置` : `${days}天后重置`;
+    }
+    if (hours > 0) {
+      return mins > 0 ? `${hours}小时${mins}分后重置` : `${hours}小时后重置`;
+    }
+    return `${Math.max(1, mins)}分钟后重置`;
+  }
+
+  /**
+   * 解析单个 QuotaSummaryBucket（兼容 Protobuf oneof remaining 与扁平 remainingFraction）
+   */
+  function parseQuotaSummaryBucket(bucket) {
+    if (!bucket || typeof bucket !== 'object') return null;
+    const hint = `${bucket.bucketId || ''} ${bucket.displayName || ''} ${bucket.window || ''}`.toLowerCase();
+    let windowType = '';
+    if (bucket.window === 'weekly' || /week/.test(hint)) {
+      windowType = 'weekly';
+    } else if (bucket.window === '5h' || /5h|five|hour/.test(hint)) {
+      windowType = '5h';
+    }
+    if (!windowType) return null;
+
+    const resetMs = parseQuotaResetTimeMs(bucket.resetTime);
+    let fraction = null;
+    if (typeof bucket.remainingFraction === 'number' && Number.isFinite(bucket.remainingFraction)) {
+      fraction = bucket.remainingFraction;
+    } else if (
+      bucket.remaining &&
+      bucket.remaining.case === 'remainingFraction' &&
+      typeof bucket.remaining.value === 'number'
+    ) {
+      fraction = bucket.remaining.value;
+    } else if (bucket.disabled === true || (Number.isFinite(resetMs) && resetMs > Date.now())) {
+      fraction = 0;
+    }
+    if (fraction === null) return null;
+
+    const clamped = Math.max(0, Math.min(1, fraction));
+    const pct = Math.round(clamped * 100);
+    const resetText = clamped < 0.9995 ? formatQuotaResetCountdown(resetMs) : '';
+    return { window: windowType, pct, resetMs, resetText };
+  }
+
+  /**
+   * 将原生 RetrieveUserQuotaSummary 响应解析为模型池映射表（优先采用官方分组描述中的模型清单）
+   */
+  function parseQuotaGroupsFromSummary(rawSummary) {
+    const resp = rawSummary?.response || rawSummary;
+    if (!resp || typeof resp !== 'object') return [];
+
+    let rawGroups = Array.isArray(resp.groups) ? resp.groups : [];
+    if (rawGroups.length === 0 && Array.isArray(resp.buckets) && resp.buckets.length > 0) {
+      rawGroups = [{ displayName: 'All Models', description: '', buckets: resp.buckets }];
+    }
+
+    const parsedGroups = [];
+    for (const group of rawGroups) {
+      const buckets = Array.isArray(group?.buckets) ? group.buckets : [];
+      let weekly = null;
+      let fiveHour = null;
+      for (const b of buckets) {
+        const parsed = parseQuotaSummaryBucket(b);
+        if (!parsed) continue;
+        if (parsed.window === 'weekly') weekly = parsed;
+        else if (parsed.window === '5h') fiveHour = parsed;
+      }
+      if (!weekly && !fiveHour) continue;
+
+      const exactModels = new Set();
+      const desc = String(group?.description || '');
+      const listMatch = desc.match(/models within this group:\s*([^\n.]+(?:\.\d+[^\n.]*)*)/i) ||
+        desc.match(/models within this group:\s*(.+)$/i);
+      if (listMatch && listMatch[1]) {
+        for (const token of listMatch[1].split(',')) {
+          const cleanName = token.replace(/\.$/, '').trim().toLowerCase();
+          if (cleanName) exactModels.add(cleanName);
+        }
+      }
+
+      const headerText = `${group?.displayName || ''} ${desc}`.toLowerCase();
+      let keywords = [];
+      if (headerText.includes('gemini')) {
+        keywords = ['gemini', 'orchestrator', 'neon', 'carbon', 'argon', 'hydrogen', 'flash'];
+      } else if (headerText.includes('claude') || headerText.includes('gpt') || headerText.includes('3p')) {
+        keywords = ['claude', 'opus', 'sonnet', 'haiku', 'gpt', 'oss', 'o1', 'o3', 'o4'];
+      }
+
+      parsedGroups.push({
+        title: String(group?.displayName || '模型池'),
+        exactModels,
+        keywords,
+        weekly,
+        fiveHour,
+      });
+    }
+    return parsedGroups;
+  }
+
+  /**
+   * 异步刷新模型池周额度与 5 小时额度缓存（带并发去重与 25s TTL）
+   */
+  async function ensureQuotaSummaryFresh(force = false, footerEl = null) {
+    const now = Date.now();
+    if (!force && quotaGroupsCache.length > 0 && now - quotaFetchedAt < QUOTA_CACHE_TTL_MS) {
+      return quotaGroupsCache;
+    }
+    if (quotaFetchPromise) return quotaFetchPromise;
+
+    const client = getLanguageServerClient(footerEl || activeFooterEl || lastOpenedFooterEl);
+    if (!client) return quotaGroupsCache;
+
+    quotaFetchPromise = Promise.resolve()
+      .then(() => client.retrieveUserQuotaSummary({}))
+      .then((raw) => {
+        const parsed = parseQuotaGroupsFromSummary(raw);
+        if (parsed.length > 0) {
+          quotaGroupsCache = parsed;
+          quotaFetchedAt = Date.now();
+          quotaCacheVersion++;
+          lastPopoverFingerprint = '';
+          if (activeFooterEl && document.body.contains(activeFooterEl)) {
+            renderPopoverData(activeFooterEl, true);
+          }
+        }
+        return quotaGroupsCache;
+      })
+      .catch(() => quotaGroupsCache)
+      .finally(() => {
+        quotaFetchPromise = null;
+      });
+
+    return quotaFetchPromise;
+  }
+
+  /**
+   * 根据模型系列名称匹配所属配额池的周额度与 5 小时额度
+   */
+  function resolveQuotaPairForFamily(familyName) {
+    if (!familyName || quotaGroupsCache.length === 0) return null;
+    const lower = String(familyName).trim().toLowerCase();
+
+    for (const group of quotaGroupsCache) {
+      if (group.exactModels.has(lower)) {
+        return { weekly: group.weekly, fiveHour: group.fiveHour };
+      }
+    }
+    for (const group of quotaGroupsCache) {
+      for (const exact of group.exactModels) {
+        if (lower.startsWith(exact) || exact.startsWith(lower)) {
+          return { weekly: group.weekly, fiveHour: group.fiveHour };
+        }
+      }
+    }
+    for (const group of quotaGroupsCache) {
+      if (group.keywords.some((kw) => lower.includes(kw))) {
+        return { weekly: group.weekly, fiveHour: group.fiveHour };
+      }
+    }
+    return quotaGroupsCache.length === 1
+      ? { weekly: quotaGroupsCache[0].weekly, fiveHour: quotaGroupsCache[0].fiveHour }
+      : null;
+  }
+
+  /**
+   * 根据剩余额度百分比返回自动告警颜色（充裕绿 -> 偏低琥珀黄 -> 告急/耗尽红）
+   */
+  function resolveQuotaRingColor(pct) {
+    if (pct >= 40) return '#10b981';
+    if (pct >= 15) return '#f59e0b';
+    return '#ef4444';
+  }
+
+  /**
+   * 绘制单个微型剩余额度圆环 SVG（0% 时展示淡红警报底环 + 圆心红点）
+   */
+  function buildSingleQuotaRingSvg(bucket, sizePx, dark) {
+    if (!bucket) return '';
+    const pct = Math.max(0, Math.min(100, Number(bucket.pct || 0)));
+    const color = resolveQuotaRingColor(pct);
+    const r = 5.0;
+    const c = 2 * Math.PI * r;
+    const trackColor =
+      pct <= 0
+        ? 'rgba(239, 68, 68, 0.36)'
+        : dark
+          ? 'rgba(255, 255, 255, 0.16)'
+          : 'rgba(113, 113, 122, 0.22)';
+
+    if (pct <= 0) {
+      return `<svg class="cr-quota-ring-svg" width="${sizePx}" height="${sizePx}" viewBox="0 0 14 14" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="${r}" stroke="${trackColor}" stroke-width="1.85"/><circle cx="7" cy="7" r="1.5" fill="#ef4444"/></svg>`;
+    }
+
+    const dash = ((pct / 100) * c).toFixed(2);
+    return `<svg class="cr-quota-ring-svg" width="${sizePx}" height="${sizePx}" viewBox="0 0 14 14" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="${r}" stroke="${trackColor}" stroke-width="1.85"/><circle cx="7" cy="7" r="${r}" stroke="${color}" stroke-width="1.85" stroke-dasharray="${dash} ${c.toFixed(2)}" stroke-linecap="round" transform="rotate(-90 7 7)"/></svg>`;
+  }
+
+  /**
+   * 生成模型名左侧的「周额度（左）+ 5小时额度（右）」双圆环 HTML 与悬停说明文案
+   */
+  function buildQuotaPairVisual(familyName, sizePx, dark) {
+    const pair = resolveQuotaPairForFamily(familyName);
+    if (!pair || (!pair.weekly && !pair.fiveHour)) {
+      return { html: '', tooltip: '' };
+    }
+
+    const weeklySvg = buildSingleQuotaRingSvg(pair.weekly, sizePx, dark);
+    const fiveHourSvg = buildSingleQuotaRingSvg(pair.fiveHour, sizePx, dark);
+    const tipParts = [];
+    if (pair.weekly) {
+      tipParts.push(
+        `周额度剩余 ${pair.weekly.pct}%${pair.weekly.resetText ? `（${pair.weekly.resetText}）` : ''}`
+      );
+    }
+    if (pair.fiveHour) {
+      tipParts.push(
+        `5小时额度剩余 ${pair.fiveHour.pct}%${pair.fiveHour.resetText ? `（${pair.fiveHour.resetText}）` : ''}`
+      );
+    }
+
+    return {
+      html: `${weeklySvg}${fiveHourSvg}`,
+      tooltip: tipParts.join(' · '),
+    };
+  }
+
   /**
    * 解析模型名称中的系列名与思考等级后缀（仅识别标准思考等级，保留 Orchestrator (Neon) 等独立变体名）
    */
@@ -1704,10 +2081,11 @@
     const menu = pop.querySelector('[data-role="model-menu"]');
     if (!btn || !menu) return;
 
-    // 展开菜单期间锁定悬浮卡片，避免光标移动触发卡片自动收起
+    // 展开菜单期间锁定悬浮卡片，并异步确保额度快照处于最新状态
     popoverPinned = true;
+    void ensureQuotaSummaryFresh(false, activeFooterEl || lastOpenedFooterEl);
     const rect = btn.getBoundingClientRect();
-    const shouldOpenDown = rect.top < 252 && window.innerHeight - rect.bottom > rect.top;
+    const shouldOpenDown = rect.top < 268 && window.innerHeight - rect.bottom > rect.top;
     menu.classList.toggle('is-down', shouldOpenDown);
 
     btn.classList.add('is-open');
@@ -1734,7 +2112,7 @@
   }
 
   /**
-   * 渲染悬浮卡片中的模型切换器与融合式思考深度滑轨
+   * 渲染悬浮卡片中的模型切换器（含周/5h 额度双圆环）与融合式思考深度滑轨
    */
   function renderThinkingEffortControl(pop, footerEl) {
     const box = pop.querySelector('[data-role="effort-box"]');
@@ -1750,6 +2128,7 @@
     }
 
     box.style.display = '';
+    const dark = isDarkTheme();
     const hasLevels = controller.levels.length > 0;
     const isSingle = controller.levels.length < 2;
 
@@ -1759,39 +2138,64 @@
     const modelEl = pop.querySelector('[data-role="effort-model"]');
     if (modelEl) modelEl.textContent = controller.family;
 
+    const currentQuota = buildQuotaPairVisual(controller.family, 11.5, dark);
+    const currentQuotaSlot = pop.querySelector('[data-role="current-model-quota"]');
+    if (currentQuotaSlot && currentQuotaSlot.innerHTML !== currentQuota.html) {
+      currentQuotaSlot.innerHTML = currentQuota.html;
+    }
+
     const pickerBtn = pop.querySelector('[data-role="model-picker-btn"]');
     if (pickerBtn) {
       const canSwitchModel = controller.families.length > 1;
       pickerBtn.classList.toggle('is-static', !canSwitchModel);
       pickerBtn.disabled = !canSwitchModel;
+      const baseTitle = `当前模型：${controller.selectedLabel || controller.family}`;
+      const quotaSuffix = currentQuota.tooltip ? `\n${currentQuota.tooltip}` : '';
       pickerBtn.title = canSwitchModel
-        ? `当前模型：${controller.selectedLabel || controller.family}（点击切换模型系列）`
-        : controller.selectedLabel || controller.family;
+        ? `${baseTitle}${quotaSuffix}\n（点击切换模型系列）`
+        : `${baseTitle}${quotaSuffix}`;
     }
 
-    // 增量渲染去重后的模型系列列表，仅在列表结构变化时重建 DOM，保持滚动条稳定
+    // 增量渲染去重后的模型系列列表（左侧双圆环展示周额度与 5h 额度）
     const menuEl = pop.querySelector('[data-role="model-menu"]');
     if (menuEl) {
-      const familiesSig = controller.families.map((f) => `${f.family}:${f.levels.length}`).join('|');
+      const familiesSig = [
+        dark ? 1 : 0,
+        quotaCacheVersion,
+        ...controller.families.map((f) => `${f.family}:${f.levels.length}`),
+      ].join('|');
       if (menuEl.dataset.sig !== familiesSig) {
         menuEl.dataset.sig = familiesSig;
-        menuEl.innerHTML = controller.families
-          .map((item) => {
-            const levelHint = item.levels.length > 1 ? `${item.levels.length}档` : '';
-            const safeFamily = escapeHtml(item.family);
-            return `
-              <button type="button" class="cr-model-option" role="option" data-family="${safeFamily}">
-                <span class="cr-model-option-name">${safeFamily}</span>
-                <span class="cr-model-option-right">
-                  ${levelHint ? `<span class="cr-model-option-meta">${levelHint}</span>` : ''}
-                  <svg class="cr-model-option-check" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M2.5 6.2L5 8.6L9.5 3.6" />
-                  </svg>
-                </span>
-              </button>
-            `;
-          })
-          .join('');
+        const headHtml =
+          quotaGroupsCache.length > 0
+            ? `<div class="cr-model-menu-head"><span>周 · 5h 剩余额度</span><span>档位</span></div>`
+            : '';
+        menuEl.innerHTML =
+          headHtml +
+          controller.families
+            .map((item) => {
+              const levelHint = item.levels.length > 1 ? `${item.levels.length}档` : '';
+              const safeFamily = escapeHtml(item.family);
+              const qVis = buildQuotaPairVisual(item.family, 13, dark);
+              const optTitle = qVis.tooltip
+                ? escapeHtml(`${item.family} — ${qVis.tooltip}`)
+                : safeFamily;
+              return `
+                <button type="button" class="cr-model-option" role="option" data-family="${safeFamily}" title="${optTitle}">
+                  <span class="cr-model-option-left">
+                    <span class="cr-quota-pair">${qVis.html}</span>
+                    <span class="cr-model-option-name">${safeFamily}</span>
+                  </span>
+                  <span class="cr-model-option-right">
+                    ${levelHint ? `<span class="cr-model-option-meta">${levelHint}</span>` : ''}
+                    <svg class="cr-model-option-check" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M2.5 6.2L5 8.6L9.5 3.6" />
+                    </svg>
+                  </span>
+                </button>
+              `;
+            })
+            .join('');
       }
       for (const optBtn of menuEl.querySelectorAll('.cr-model-option')) {
         const isActive = optBtn.getAttribute('data-family') === controller.family;
@@ -1934,6 +2338,7 @@
           <span class="cr-effort-caption" data-role="effort-caption">思考深度</span>
           <div class="cr-model-picker" data-role="model-picker">
             <button type="button" class="cr-effort-model-btn" data-role="model-picker-btn" aria-haspopup="listbox" aria-expanded="false" title="点击切换模型系列">
+              <span class="cr-quota-pair" data-role="current-model-quota"></span>
               <span class="cr-model-btn-label" data-role="effort-model">Model</span>
               <svg class="cr-model-caret" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M3 4.5L6 7.5L9 4.5" />
@@ -2149,6 +2554,7 @@
       limit,
       currentSettings.palette,
       modelLabel || data.modelName,
+      quotaCacheVersion,
       isDarkTheme() ? 1 : 0,
     ].join('|');
 
@@ -2460,6 +2866,7 @@
     if (pinOpen) popoverPinned = true;
 
     const pop = getOrCreatePopover();
+    void ensureQuotaSummaryFresh(false, footerEl);
     renderPopoverData(footerEl, true);
     pop.classList.add('is-open');
 
@@ -2700,6 +3107,10 @@
   }, 2600);
 
   void syncAllComposerFooters(true);
+  setTimeout(() => {
+    const firstFooter = document.body && document.body.getElementsByClassName('agy-composer-footer')[0];
+    if (firstFooter) void ensureQuotaSummaryFresh(false, firstFooter);
+  }, 400);
 
   /**
    * 暴露给 Sidecar 面板远程调用的一键执行 /compact 入口
