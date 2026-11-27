@@ -5,7 +5,7 @@
  * 1. 零 DOM 原型污染（不修改 document.querySelectorAll），与其他插件安全共存；
  * 2. 通过 CDP Runtime.addBinding ('__contextRingHost') 零端口获取实时会话数据与同步设置；
  * 3. 悬浮卡片内置「思考等级星云滑块」，真实联动 Antigravity 当前模型的 Low/Medium/High/XHigh 思考等级；
- * 4. 悬浮卡片右上角提供「设置」按钮，点击打开专属样式与监控设置页面，自由定制 5 种形态、配色、上限与挂载位置。
+ * 4. 悬浮卡片右上角提供「设置」按钮，点击打开双页签设置与用量看板，自由定制 3 种精选形态、按模型上限、压缩后防失忆 Hook，并查看历史用量热力图与预估 API 费用。
  */
 (function installContextRingWidget() {
   const WIDGET_VERSION = window.__CONTEXT_RING_EXPECTED_VERSION__ || '1.0.0';
@@ -39,16 +39,16 @@
   const QUOTA_TIP_ID = 'agy-context-ring-quota-tip';
   const SETTINGS_MODAL_ID = 'agy-context-ring-settings-modal';
   const HOST_CLASS = 'agy-context-ring-host';
+  const QUOTA_HOST_CLASS = 'agy-context-ring-quota-host';
 
   const STYLE_OPTIONS = [
     { id: 'bottle', label: '玻璃瓶装水', desc: '双层波浪液面与上升气泡' },
     { id: 'caterpillar', label: '盘圈毛毛虫', desc: '圆珠身体沿圆环爬行生长' },
-    { id: 'donut', label: '双层甜甜圈', desc: '外圈占用进度 + 内圈缓存率' },
     { id: 'ring', label: '极简细环', desc: '清爽细圆环 + 呼吸光点' },
-    { id: 'capsule', label: '液态胶囊', desc: '横向玻璃胶囊高光液柱' },
   ];
 
   const LIMIT_OPTIONS = [
+    { value: 0, label: '自动' },
     { value: 256000, label: '256k' },
     { value: 512000, label: '512k' },
     { value: 1000000, label: '1M' },
@@ -66,19 +66,57 @@
     ultra: { rank: 6, short: 'Ultra', display: 'Ultra', color: '#8b5cf6', gradient: 'linear-gradient(90deg, #2f75c3, #6366f1, #9333ea)' },
   };
 
+  function normalizeModelKey(rawModelName) {
+    return String(rawModelName || '')
+      .trim()
+      .replace(/\s*\((?:minimal|min|low|medium|med|high|xhigh|extra\s*high|max|ultra|thinking|adaptive|preview)\)\s*$/i, '')
+      .replace(/[-_\s]+(?:minimal|low|medium|high|xhigh|extra[-_\s]?high|max|ultra)$/i, '')
+      .trim()
+      .toLowerCase()
+      .replace(/[.]+/g, '-')
+      .replace(/[^a-z0-9-]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 80);
+  }
+
+  function normalizeWidgetStyle(rawStyle) {
+    return ['bottle', 'caterpillar', 'ring'].includes(rawStyle) ? rawStyle : 'bottle';
+  }
+
   // 当前运行态配置与会话统计缓存
   let currentSettings = Object.assign(
     {
       enabled: true,
       styleMode: 'bottle',
       palette: 'auto',
-      contextLimit: 512000,
+      contextLimit: 0,
+      modelContextLimits: {},
       showPercentText: true,
       animateEffects: true,
       placement: 'right',
     },
     window.__CONTEXT_RING_BOOT_SETTINGS__ || {}
   );
+  currentSettings.styleMode = normalizeWidgetStyle(currentSettings.styleMode);
+  if (!currentSettings.modelContextLimits || typeof currentSettings.modelContextLimits !== 'object') {
+    currentSettings.modelContextLimits = {};
+  }
+
+  let rehydrateStatus = {
+    enabled: false,
+    registered: false,
+    externalConflict: false,
+    externalHookName: '',
+    error: '',
+  };
+  let activeSettingsTab = 'appearance';
+  let historyPeriod = '30d';
+  let historyReport = null;
+  let historyLoading = false;
+  const clientModelCatalogLimits = new Map();
+  let clientCatalogFetchedAt = 0;
+  let clientCatalogPromise = null;
 
   const usageCache = new Map();
   const pendingRpc = new Map();
@@ -96,15 +134,43 @@
   let settingsPreviewPct = null;
 
   /**
+   * 计算当前模型实际生效的上下文上限（优先级：按模型自定义 > 全局手动 > 宿主真实探测 > 模型目录 > 512k）
+   */
+  function resolveEffectiveLimitForUi(usageData, fallbackModelLabel = '') {
+    const modelName = String(fallbackModelLabel || usageData?.modelName || '').trim();
+    const modelKey = normalizeModelKey(modelName);
+    const customMap = currentSettings.modelContextLimits || {};
+    if (modelKey && Number(customMap[modelKey]) > 0) {
+      return { limit: Number(customMap[modelKey]), source: '自定', auto: false, modelKey, modelName };
+    }
+    if (Number(currentSettings.contextLimit || 0) > 0) {
+      return { limit: Number(currentSettings.contextLimit), source: '全局', auto: false, modelKey, modelName };
+    }
+    const detected = Number(usageData?.detectedContextLimit || 0);
+    if (detected >= 16000) {
+      return { limit: detected, source: '自动', auto: true, modelKey, modelName, detected };
+    }
+    const catalog =
+      Number(usageData?.catalogContextLimit || 0) ||
+      (modelKey ? Number(clientModelCatalogLimits.get(modelKey) || 0) : 0) ||
+      (modelName ? Number(clientModelCatalogLimits.get(modelName.toLowerCase()) || 0) : 0);
+    if (catalog >= 16000) {
+      return { limit: catalog, source: '自动', auto: true, modelKey, modelName, detected: catalog };
+    }
+    return { limit: 512000, source: '自动', auto: true, modelKey, modelName, detected: 0 };
+  }
+
+  /**
    * 比较两份设置对象是否完全一致（避免同值广播触发冗余重绘）
    */
   function isSameSettings(a, b) {
     if (!a || !b) return false;
     return (
       a.enabled === b.enabled &&
-      a.styleMode === b.styleMode &&
+      normalizeWidgetStyle(a.styleMode) === normalizeWidgetStyle(b.styleMode) &&
       a.palette === b.palette &&
       Number(a.contextLimit) === Number(b.contextLimit) &&
+      JSON.stringify(a.modelContextLimits || {}) === JSON.stringify(b.modelContextLimits || {}) &&
       a.showPercentText === b.showPercentText &&
       a.animateEffects === b.animateEffects &&
       a.placement === b.placement
@@ -127,11 +193,32 @@
    */
   window.__contextRingReceiveSettings = function receiveSettings(nextSettings) {
     if (!nextSettings || typeof nextSettings !== 'object') return;
-    const merged = Object.assign({}, currentSettings, nextSettings);
+    const merged = Object.assign({}, currentSettings, nextSettings, {
+      styleMode: normalizeWidgetStyle(nextSettings.styleMode ?? currentSettings.styleMode),
+      modelContextLimits:
+        nextSettings.modelContextLimits && typeof nextSettings.modelContextLimits === 'object'
+          ? Object.assign({}, nextSettings.modelContextLimits)
+          : Object.assign({}, currentSettings.modelContextLimits || {}),
+    });
     if (isSameSettings(currentSettings, merged)) return;
     currentSettings = merged;
     lastPopoverFingerprint = '';
     syncAllComposerFooters(false);
+    if (activeFooterEl) {
+      renderPopoverData(activeFooterEl, true);
+    }
+    if (isSettingsModalOpen()) {
+      renderSettingsPageContent();
+    }
+  };
+
+  /**
+   * 接收来自宿主的压缩后防失忆 Hook 状态广播
+   */
+  window.__contextRingReceiveRehydrate = function receiveRehydrate(nextStatus) {
+    if (!nextStatus || typeof nextStatus !== 'object') return;
+    rehydrateStatus = Object.assign({}, rehydrateStatus, nextStatus);
+    lastPopoverFingerprint = '';
     if (activeFooterEl) {
       renderPopoverData(activeFooterEl, true);
     }
@@ -153,7 +240,7 @@
       const timer = setTimeout(() => {
         pendingRpc.delete(id);
         resolve({ ok: false, error: 'rpc-timeout' });
-      }, 4500);
+      }, 6500);
 
       pendingRpc.set(id, { resolve, timer });
       try {
@@ -167,10 +254,29 @@
   }
 
   /**
-   * 统一更新本地设置并异步持久化到 settings.json
+   * 统一更新本地设置并异步持久化到 settings.json（支持按模型上限增量乐观更新）
    */
   function applySettingPatch(patch) {
-    const merged = Object.assign({}, currentSettings, patch);
+    const nextLimits = Object.assign({}, currentSettings.modelContextLimits || {});
+    if (patch.modelContextLimits && typeof patch.modelContextLimits === 'object') {
+      Object.keys(nextLimits).forEach((k) => delete nextLimits[k]);
+      Object.assign(nextLimits, patch.modelContextLimits);
+    }
+    if (patch.setModelContextLimit && typeof patch.setModelContextLimit === 'object') {
+      const targetKey = normalizeModelKey(
+        patch.setModelContextLimit.modelKey || patch.setModelContextLimit.modelName || ''
+      );
+      const targetLim = Number(patch.setModelContextLimit.limit);
+      if (targetKey) {
+        if (!targetLim || targetLim <= 0) delete nextLimits[targetKey];
+        else nextLimits[targetKey] = Math.round(targetLim);
+      }
+    }
+    const merged = Object.assign({}, currentSettings, patch, {
+      styleMode: normalizeWidgetStyle(patch.styleMode ?? currentSettings.styleMode),
+      modelContextLimits: nextLimits,
+    });
+    delete merged.setModelContextLimit;
     if (isSameSettings(currentSettings, merged)) return;
     currentSettings = merged;
     lastPopoverFingerprint = '';
@@ -258,6 +364,25 @@
         margin: 0 2px;
         position: relative;
         user-select: none;
+      }
+      .${QUOTA_HOST_CLASS} {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        height: 24px;
+        padding: 0 5px;
+        margin-left: 2px;
+        border-radius: 9999px;
+        flex-shrink: 0;
+        cursor: pointer;
+        user-select: none;
+        transition: background-color 0.16s ease, opacity 0.16s ease;
+      }
+      .${QUOTA_HOST_CLASS}:empty {
+        display: none;
+      }
+      .${QUOTA_HOST_CLASS}:hover {
+        background: var(--secondary, rgba(148, 163, 184, 0.14));
       }
       .cr-trigger-btn {
         display: inline-flex;
@@ -347,7 +472,7 @@
         left: 0;
         top: 0;
         z-index: 99995;
-        width: 296px;
+        width: 306px;
         padding: 13px 14px 12px;
         border-radius: 16px;
         background: var(--card, #ffffff);
@@ -507,6 +632,78 @@
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+      }
+
+      /* 紧凑单行生成速度体检条（有数据时自动显现） */
+      .cr-speed-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 6px;
+        padding: 5px 8px;
+        margin-bottom: 10px;
+        border-radius: 9px;
+        background: var(--muted, rgba(10, 10, 12, 0.036));
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 10.5px;
+        line-height: 1.25;
+      }
+      #${POPOVER_ID}.is-dark .cr-speed-bar {
+        background: rgba(255, 255, 255, 0.045);
+      }
+      .cr-speed-bar.is-hidden {
+        display: none;
+      }
+      .cr-speed-left {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-weight: 700;
+        color: var(--foreground, #0a0a0c);
+        white-space: nowrap;
+      }
+      #${POPOVER_ID}.is-dark .cr-speed-left {
+        color: #f4f4f5;
+      }
+      .cr-speed-grade {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 15px;
+        height: 15px;
+        padding: 0 4px;
+        border-radius: 5px;
+        font-size: 9.5px;
+        font-weight: 800;
+        color: #ffffff;
+        background: #10b981;
+      }
+      .cr-speed-grade.is-S { background: #059669; }
+      .cr-speed-grade.is-A { background: #0ea5e9; }
+      .cr-speed-grade.is-B { background: #6366f1; }
+      .cr-speed-grade.is-C { background: #f59e0b; }
+      .cr-speed-grade.is-D { background: #ef4444; }
+      .cr-speed-meta {
+        color: var(--muted-foreground, #71717a);
+        font-size: 10px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #${POPOVER_ID}.is-dark .cr-speed-meta {
+        color: #a1a1aa;
+      }
+      .cr-rehydrate-dot {
+        display: none;
+        width: 6px;
+        height: 6px;
+        border-radius: 999px;
+        background: #10b981;
+        box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.25);
+        flex-shrink: 0;
+      }
+      .cr-rehydrate-dot.is-on {
+        display: inline-block;
       }
 
       /* 融合式磁吸思考深度滑轨（单行一体化，支持点击与拖拽） */
@@ -915,7 +1112,7 @@
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         font-size: 10.5px;
         font-weight: 600;
-        padding: 4px 8px;
+        padding: 4px 6.5px;
         border-radius: 7px;
         cursor: pointer;
         transition: color 0.14s ease, background-color 0.14s ease, box-shadow 0.14s ease;
@@ -1117,13 +1314,195 @@
       }
       .cr-shape-grid {
         display: grid;
-        grid-template-columns: repeat(5, minmax(0, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+      .cr-page-tabs {
+        display: inline-flex;
+        gap: 4px;
+        padding: 3px;
+        border-radius: 10px;
+        background: rgba(148, 163, 184, 0.14);
+      }
+      #${SETTINGS_MODAL_ID}.is-dark .cr-page-tabs {
+        background: rgba(255, 255, 255, 0.06);
+      }
+      .cr-page-tab {
+        border: none;
+        background: transparent;
+        color: inherit;
+        opacity: 0.72;
+        font-size: 12px;
+        font-weight: 700;
+        padding: 5px 12px;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: background-color 0.15s ease, opacity 0.15s ease;
+      }
+      .cr-page-tab:hover { opacity: 0.95; }
+      .cr-page-tab.is-active {
+        opacity: 1;
+        background: #ffffff;
+        color: #0f172a;
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+      }
+      #${SETTINGS_MODAL_ID}.is-dark .cr-page-tab.is-active {
+        background: #243042;
+        color: #f8fafc;
+      }
+      .cr-tab-pane { display: none; }
+      .cr-tab-pane.is-active { display: block; }
+      .cr-custom-limits {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 6px;
+      }
+      .cr-custom-limits:empty { display: none; }
+      .cr-limit-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 11px;
+        padding: 3px 9px;
+        border-radius: 999px;
+        border: 1px solid rgba(148, 163, 184, 0.28);
+        background: rgba(148, 163, 184, 0.08);
+      }
+      .cr-limit-tag button {
+        border: none;
+        background: transparent;
+        color: inherit;
+        opacity: 0.7;
+        cursor: pointer;
+        font-weight: 700;
+        padding: 0 2px;
+      }
+      .cr-rehydrate-desc {
+        font-size: 11.5px;
+        opacity: 0.75;
+        line-height: 1.45;
+        margin-top: 4px;
+      }
+      .cr-rehydrate-alert {
+        margin-top: 7px;
+        padding: 6px 10px;
+        border-radius: 8px;
+        background: rgba(245, 158, 11, 0.13);
+        color: #b45309;
+        font-size: 11.5px;
+      }
+      #${SETTINGS_MODAL_ID}.is-dark .cr-rehydrate-alert {
+        color: #fcd34d;
+      }
+      .cr-page-pill.is-ok {
+        border-color: rgba(16, 185, 129, 0.45);
+        background: rgba(16, 185, 129, 0.14);
+        color: #059669;
+      }
+      #${SETTINGS_MODAL_ID}.is-dark .cr-page-pill.is-ok {
+        color: #6ee7b7;
+      }
+      .cr-hist-kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 10px;
       }
       @media (max-width: 680px) {
-        .cr-shape-grid {
-          grid-template-columns: repeat(3, minmax(0, 1fr));
-        }
+        .cr-hist-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
+      .cr-hist-kpi {
+        padding: 10px 12px;
+        border-radius: 11px;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        background: rgba(148, 163, 184, 0.05);
+      }
+      .cr-hist-kpi-label {
+        font-size: 11px;
+        opacity: 0.7;
+      }
+      .cr-hist-kpi-val {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 16px;
+        font-weight: 800;
+        margin-top: 3px;
+      }
+      .cr-hist-kpi-sub {
+        font-size: 10.5px;
+        opacity: 0.65;
+        margin-top: 2px;
+      }
+      .cr-hm-grid {
+        display: grid;
+        grid-template-columns: repeat(12, minmax(0, 1fr));
+        gap: 5px;
+      }
+      .cr-hm-week {
+        display: grid;
+        grid-template-rows: repeat(7, 1fr);
+        gap: 5px;
+      }
+      .cr-hm-cell {
+        width: 100%;
+        aspect-ratio: 1 / 1;
+        border-radius: 3px;
+        background: rgba(148, 163, 184, 0.16);
+      }
+      .cr-hm-cell.l1 { background: #bbf7d0; }
+      .cr-hm-cell.l2 { background: #4ade80; }
+      .cr-hm-cell.l3 { background: #16a34a; }
+      .cr-hm-cell.l4 { background: #15803d; }
+      #${SETTINGS_MODAL_ID}.is-dark .cr-hm-cell { background: rgba(148, 163, 184, 0.12); }
+      #${SETTINGS_MODAL_ID}.is-dark .cr-hm-cell.l1 { background: #14532d; }
+      #${SETTINGS_MODAL_ID}.is-dark .cr-hm-cell.l2 { background: #166534; }
+      #${SETTINGS_MODAL_ID}.is-dark .cr-hm-cell.l3 { background: #22c55e; }
+      #${SETTINGS_MODAL_ID}.is-dark .cr-hm-cell.l4 { background: #4ade80; }
+      .cr-hm-foot {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-top: 8px;
+        font-size: 11px;
+        opacity: 0.72;
+      }
+      .cr-hist-models {
+        display: flex;
+        flex-direction: column;
+        gap: 9px;
+      }
+      .cr-hist-model-row {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .cr-hist-model-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 12px;
+      }
+      .cr-hist-model-name { font-weight: 700; }
+      .cr-hist-model-val {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 11px;
+        opacity: 0.74;
+      }
+      .cr-hist-model-bar {
+        height: 5px;
+        border-radius: 999px;
+        background: rgba(148, 163, 184, 0.18);
+        overflow: hidden;
+      }
+      .cr-hist-model-fill {
+        height: 100%;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #0ea5e9, #10b981);
+      }
+      .cr-hist-disclaimer {
+        margin-top: 9px;
+        font-size: 11px;
+        opacity: 0.65;
       }
       .cr-shape-card {
         position: relative;
@@ -1251,7 +1630,7 @@
   }
 
   /**
-   * 渲染 5 种形态的矢量 SVG（支持传入 size 控制底栏小图标或设置页大号预览）
+   * 渲染 3 种精选形态的矢量 SVG（玻璃水瓶装水 / 盘圈毛毛虫 / 极简细环）
    */
   function buildShapeSvg(styleMode, pct, cacheHitRate, colors, uid, size = 20) {
     const clamped = Math.max(0, Math.min(100, pct));
@@ -1278,38 +1657,7 @@
       `;
     }
 
-    // 2. 双层甜甜圈（Donut：外层总上下文 + 内层缓存命中率翠绿环）
-    if (styleMode === 'donut') {
-      const outerR = 6.3;
-      const outerC = 2 * Math.PI * outerR;
-      const outerOff = outerC * (1 - clamped / 100);
-      const innerR = 3.4;
-      const innerC = 2 * Math.PI * innerR;
-      const cacheClamped = Math.max(0, Math.min(100, Number(cacheHitRate || 0)));
-      const innerOff = innerC * (1 - cacheClamped / 100);
-      return `
-        <svg width="${size}" height="${size}" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-          <circle cx="10" cy="10" r="${outerR}" stroke="${trackStroke}" stroke-width="3.5"/>
-          ${
-            clamped > 0
-              ? `<circle cx="10" cy="10" r="${outerR}" stroke="${colors.main}" stroke-width="3.5"
-            stroke-linecap="round" stroke-dasharray="${outerC.toFixed(2)}" stroke-dashoffset="${outerOff.toFixed(2)}"
-            transform="rotate(-90 10 10)"/>`
-              : ''
-          }
-          <circle cx="10" cy="10" r="${innerR}" stroke="${trackStroke}" stroke-width="1.4" stroke-opacity="0.6"/>
-          ${
-            cacheClamped > 0
-              ? `<circle cx="10" cy="10" r="${innerR}" stroke="#10b981" stroke-width="1.5"
-            stroke-linecap="round" stroke-dasharray="${innerC.toFixed(2)}" stroke-dashoffset="${innerOff.toFixed(2)}"
-            transform="rotate(-90 10 10)"/>`
-              : ''
-          }
-        </svg>
-      `;
-    }
-
-    // 3. 盘圈环形毛毛虫（Caterpillar：圆珠身体沿圆周逐节生长 + 触角眨眼虫头沿圆弧爬行）
+    // 2. 盘圈环形毛毛虫（Caterpillar：圆珠身体沿圆周逐节生长 + 触角眨眼虫头沿圆弧爬行）
     if (styleMode === 'caterpillar') {
       const cx = 11;
       const cy = 11;
@@ -1369,29 +1717,7 @@
       `;
     }
 
-    // 4. 胶囊液态条（Capsule）
-    if (styleMode === 'capsule') {
-      const capW = Math.round(size * 1.4);
-      const capH = Math.round(size * 0.72);
-      const innerWidth = Math.max(clamped > 0 ? 2.5 : 0, (24 * clamped) / 100);
-      const clipId = `cr-cap-${uid}`;
-      return `
-        <svg width="${capW}" height="${capH}" viewBox="0 0 28 14" fill="none" aria-hidden="true">
-          <defs>
-            <clipPath id="${clipId}">
-              <rect x="2" y="2.5" width="24" height="9" rx="4.5"/>
-            </clipPath>
-          </defs>
-          <rect x="1.25" y="1.75" width="25.5" height="10.5" rx="5.25" stroke="${trackStroke}" stroke-width="1.3"/>
-          <g clip-path="url(#${clipId})">
-            <rect x="2" y="2.5" width="${innerWidth.toFixed(2)}" height="9" rx="4.5" fill="${colors.main}"/>
-            <rect x="3" y="3.6" width="${Math.max(0, innerWidth - 2).toFixed(2)}" height="2" rx="1" fill="#ffffff" fill-opacity="0.32"/>
-          </g>
-        </svg>
-      `;
-    }
-
-    // 5. 默认经典款：玻璃水瓶装水（Bottle）
+    // 3. 默认经典款：玻璃水瓶装水（Bottle）
     const btlW = Math.round(size * 0.9);
     const clipId = `cr-btl-${uid}`;
     const gradId = `cr-liq-${uid}`;
@@ -1691,6 +2017,7 @@
           if (activeFooterEl && document.body.contains(activeFooterEl)) {
             renderPopoverData(activeFooterEl, true);
           }
+          refreshAllFooterQuotaBadges();
         }
         return quotaGroupsCache;
       })
@@ -1700,6 +2027,57 @@
       });
 
     return quotaFetchPromise;
+  }
+
+  /**
+   * 异步拉取宿主可用模型目录以缓存各模型官方真实上下文上限（60s TTL，供自动上限模式使用）
+   */
+  async function ensureAvailableModelsFresh(footerEl = null) {
+    const now = Date.now();
+    if (clientModelCatalogLimits.size > 0 && now - clientCatalogFetchedAt < 60000) {
+      return clientModelCatalogLimits;
+    }
+    if (clientCatalogPromise) return clientCatalogPromise;
+
+    const client = getLanguageServerClient(footerEl || activeFooterEl || lastOpenedFooterEl);
+    if (!client || typeof client.getAvailableModels !== 'function') {
+      return clientModelCatalogLimits;
+    }
+
+    clientCatalogPromise = Promise.resolve()
+      .then(() => client.getAvailableModels({}))
+      .then((raw) => {
+        const modelsObj = raw?.response?.models || raw?.models || {};
+        if (modelsObj && typeof modelsObj === 'object') {
+          for (const [id, info] of Object.entries(modelsObj)) {
+            const maxTok = Number(info?.maxTokens || info?.maxContextTokens || 0);
+            if (!Number.isFinite(maxTok) || maxTok < 16000) continue;
+            const rounded = Math.round(maxTok);
+            const display = String(info?.displayName || '').trim();
+            const keys = [
+              id.toLowerCase(),
+              display.toLowerCase(),
+              normalizeModelKey(display || id),
+              normalizeModelKey(id),
+            ].filter(Boolean);
+            for (const k of keys) {
+              clientModelCatalogLimits.set(k, rounded);
+            }
+          }
+          clientCatalogFetchedAt = Date.now();
+          lastPopoverFingerprint = '';
+          if (activeFooterEl && document.body.contains(activeFooterEl)) {
+            renderPopoverData(activeFooterEl, true);
+          }
+        }
+        return clientModelCatalogLimits;
+      })
+      .catch(() => clientModelCatalogLimits)
+      .finally(() => {
+        clientCatalogPromise = null;
+      });
+
+    return clientCatalogPromise;
   }
 
   /**
@@ -2463,9 +2841,11 @@
       lastPopoverFingerprint = '';
       setTimeout(() => {
         if (activeFooterEl) renderPopoverData(activeFooterEl, true);
+        refreshAllFooterQuotaBadges();
       }, 90);
       setTimeout(() => {
         if (activeFooterEl) renderPopoverData(activeFooterEl, true);
+        refreshAllFooterQuotaBadges();
       }, 240);
     } catch {
       // 忽略模型切换异常
@@ -2546,6 +2926,14 @@
         </div>
       </div>
 
+      <div class="cr-speed-bar is-hidden" data-role="speed-bar">
+        <span class="cr-speed-left">
+          <span data-role="speed-tps">⚡ --</span>
+          <span class="cr-speed-grade" data-role="speed-grade" style="display:none;">A</span>
+        </span>
+        <span class="cr-speed-meta" data-role="speed-meta">--</span>
+      </div>
+
       <div class="cr-effort-box" data-role="effort-box">
         <div class="cr-effort-head">
           <span class="cr-effort-caption" data-role="effort-caption">思考深度</span>
@@ -2578,6 +2966,7 @@
             <path d="M2.5 8H13.5" />
           </svg>
           <span data-role="compact-label">/compact</span>
+          <span class="cr-rehydrate-dot" data-role="rehydrate-dot" title="已开启压缩后防失忆"></span>
         </button>
       </div>
     `;
@@ -2698,14 +3087,25 @@
     effortRail.addEventListener('pointerup', finishEffortDrag);
     effortRail.addEventListener('pointercancel', finishEffortDrag);
 
-    // 切换 256k / 512k / 1M 上限并同步持久化
+    // 切换 自动 / 256k / 512k / 1M 上限并按当前模型记忆持久化
     pop.querySelector('[data-role="limit-group"]').addEventListener('click', (e) => {
       e.stopPropagation();
       const btn = e.target.closest('.cr-limit-btn');
       if (!btn) return;
       const nextLimit = Number(btn.getAttribute('data-limit'));
-      if (!nextLimit) return;
-      applySettingPatch({ contextLimit: nextLimit });
+      if (!Number.isFinite(nextLimit) || nextLimit < 0) return;
+      const targetFooter = activeFooterEl || lastOpenedFooterEl;
+      const ctx = extractComposerContext(targetFooter);
+      const cached = ctx.conversationId ? usageCache.get(ctx.conversationId) : null;
+      const activeModel = ctx.modelLabel || cached?.modelName || '';
+      if (activeModel && activeModel !== 'Model') {
+        applySettingPatch({
+          contextLimit: 0,
+          setModelContextLimit: { modelName: activeModel, limit: nextLimit },
+        });
+      } else {
+        applySettingPatch({ contextLimit: nextLimit });
+      }
     });
 
     // 点击直接执行 /compact 压缩当前会话（不可用时自动降级复制）
@@ -2761,7 +3161,8 @@
     const data =
       (conversationId ? usageCache.get(conversationId) : null) || createEmptyWidgetUsage(modelLabel);
 
-    const limit = Number(currentSettings.contextLimit || 512000);
+    const resolvedLimit = resolveEffectiveLimitForUi(data, modelLabel);
+    const limit = resolvedLimit.limit;
     const total = Number(data.totalTokens || 0);
     const cacheRead = Number(data.cacheReadTokens || 0);
     const freshInput = Number(data.inputTokens || 0);
@@ -2770,6 +3171,7 @@
     const hitRate = Number(data.cacheHitRate || 0);
     const pct = limit > 0 ? (total / limit) * 100 : 0;
     const colors = resolveThemeColors(pct);
+    const sp = data.speed || null;
 
     const fingerprint = [
       conversationId,
@@ -2782,9 +3184,13 @@
       Number(data.turnCount || 0),
       Number(data.plannerStepCount || 0),
       limit,
+      resolvedLimit.auto ? 1 : 0,
+      resolvedLimit.source,
       currentSettings.palette,
       modelLabel || data.modelName,
       quotaCacheVersion,
+      rehydrateStatus.enabled ? 1 : 0,
+      sp ? `${sp.displayTps || ''}:${sp.ttftSec || ''}:${sp.grade || ''}:${sp.thinkingTokens || 0}:${sp.responseTokens || 0}` : '',
       isDarkTheme() ? 1 : 0,
     ].join('|');
 
@@ -2795,8 +3201,11 @@
       pctEl.textContent = `${pct.toFixed(1)}%`;
       pctEl.style.color = colors.main;
 
-      pop.querySelector('[data-role="summary"]').textContent =
-        `${formatCompactTokens(total)} / ${formatCompactTokens(limit)}`;
+      const summaryEl = pop.querySelector('[data-role="summary"]');
+      summaryEl.textContent = `${formatCompactTokens(total)} / ${formatCompactTokens(limit)} · ${resolvedLimit.source}`;
+      summaryEl.title = resolvedLimit.auto
+        ? `自动识别上下文上限：${formatExactNumber(limit)} tokens`
+        : `当前模型自定义/手动上限：${formatExactNumber(limit)} tokens`;
 
       const denom = Math.max(limit, total, 1);
       const cachePct = Math.min(100, (cacheRead / denom) * 100);
@@ -2824,8 +3233,67 @@
 
       pop.querySelector('[data-role="val-steps"]').textContent = `${Number(data.turnCount || 0)} 轮 · ${Number(data.plannerStepCount || 0)} 步`;
 
+      // 实时生成速度体检条
+      const speedBar = pop.querySelector('[data-role="speed-bar"]');
+      if (speedBar) {
+        if (sp && (sp.displayTps || sp.ttftSec !== null || sp.outputTokens > 0)) {
+          speedBar.classList.remove('is-hidden');
+          const tpsEl = pop.querySelector('[data-role="speed-tps"]');
+          const gradeEl = pop.querySelector('[data-role="speed-grade"]');
+          const metaEl = pop.querySelector('[data-role="speed-meta"]');
+
+          tpsEl.textContent = sp.displayTps
+            ? `⚡ ${sp.displayTps.toFixed(1)} tok/s`
+            : sp.phase === 'warming'
+              ? '⚡ 预热中'
+              : `⚡ 输出 ${formatCompactTokens(sp.outputTokens)}`;
+
+          if (sp.grade) {
+            gradeEl.style.display = 'inline-flex';
+            gradeEl.className = `cr-speed-grade is-${sp.grade}`;
+            gradeEl.textContent = sp.grade;
+          } else {
+            gradeEl.style.display = 'none';
+          }
+
+          const metaParts = [];
+          if (sp.ttftSec !== null && sp.ttftSec !== undefined) {
+            metaParts.push(`TTFT ${sp.ttftSec.toFixed(1)}s`);
+          }
+          if (sp.thinkingTokens > 0 || sp.responseTokens > 0) {
+            metaParts.push(`思 ${formatCompactTokens(sp.thinkingTokens)} · 文 ${formatCompactTokens(sp.responseTokens)}`);
+          }
+          metaEl.textContent = metaParts.join(' · ') || '--';
+
+          const tipLines = [];
+          if (sp.streamingTps) tipLines.push(`流式速度: ${sp.streamingTps} tok/s`);
+          if (sp.tps) tipLines.push(`端到端速度: ${sp.tps} tok/s`);
+          if (sp.ttftSec !== null && sp.ttftSec !== undefined) tipLines.push(`首字延迟 TTFT: ${sp.ttftSec}s`);
+          if (sp.durationSec !== null && sp.durationSec !== undefined) tipLines.push(`总耗时: ${sp.durationSec}s`);
+          if (sp.thinkingTokens > 0 || sp.responseTokens > 0) {
+            tipLines.push(`输出拆分: 思考 ${formatExactNumber(sp.thinkingTokens)} / 正文 ${formatExactNumber(sp.responseTokens)}`);
+          }
+          if (sp.score !== null && sp.score !== undefined) {
+            tipLines.push(`响应体验分: ${sp.score} (${sp.grade || ''}${sp.gradeLabel ? ' · ' + sp.gradeLabel : ''})`);
+          }
+          speedBar.title = tipLines.join('\n');
+        } else {
+          speedBar.classList.add('is-hidden');
+        }
+      }
+
       for (const btn of pop.querySelectorAll('.cr-limit-btn')) {
-        btn.classList.toggle('is-active', Number(btn.getAttribute('data-limit')) === limit);
+        const val = Number(btn.getAttribute('data-limit'));
+        btn.classList.toggle('is-active', resolvedLimit.auto ? val === 0 : val === limit);
+      }
+
+      const compactBtn = pop.querySelector('[data-role="compact-btn"]');
+      const rhDot = pop.querySelector('[data-role="rehydrate-dot"]');
+      if (rhDot) rhDot.classList.toggle('is-on', Boolean(rehydrateStatus.enabled));
+      if (compactBtn) {
+        compactBtn.title = rehydrateStatus.enabled
+          ? '点击直接执行 /compact 压缩当前会话（已开启防失忆自动恢复）'
+          : '点击直接执行 /compact 压缩当前会话上下文';
       }
 
       renderThinkingEffortControl(pop, footerEl);
@@ -2835,8 +3303,8 @@
     const hostEl = footerEl?.querySelector(`.${HOST_CLASS}`);
     if (hostEl) {
       const rect = hostEl.getBoundingClientRect();
-      const popWidth = 292;
-      const popHeight = pop.offsetHeight || 274;
+      const popWidth = 306;
+      const popHeight = pop.offsetHeight || 296;
       let left = rect.left + rect.width / 2 - popWidth / 2;
       left = Math.max(10, Math.min(window.innerWidth - popWidth - 10, left));
       let top = rect.top - popHeight - 8;
@@ -2856,8 +3324,104 @@
     return Boolean(modal && modal.classList.contains('is-open'));
   }
 
+  function formatUsd(val) {
+    const n = Number(val || 0);
+    if (n <= 0) return '$0.00';
+    if (n < 0.01) return '<$0.01';
+    return '$' + n.toFixed(n >= 100 ? 1 : 2);
+  }
+
   /**
-   * 创建或获取独立样式与监控设置页面视图
+   * 拉取指定周期的历史用量与费用报告并渲染到设置页「历史用量与费用」页签
+   */
+  async function loadHistoryReportIntoModal(period = historyPeriod) {
+    historyPeriod = period || '30d';
+    historyLoading = true;
+    renderHistoryTabContent();
+    const resp = await callHostRpc('history.get', { period: historyPeriod });
+    historyLoading = false;
+    if (resp && resp.ok && resp.report) {
+      historyReport = resp.report;
+    }
+    if (isSettingsModalOpen()) {
+      renderHistoryTabContent();
+    }
+  }
+
+  function renderHistoryTabContent() {
+    const modal = document.getElementById(SETTINGS_MODAL_ID);
+    if (!modal) return;
+
+    for (const b of modal.querySelectorAll('[data-role="hist-period-row"] [data-period]')) {
+      b.classList.toggle('is-active', b.getAttribute('data-period') === historyPeriod);
+    }
+
+    const report = historyReport;
+    if (!report) {
+      modal.querySelector('[data-role="hist-total"]').textContent = historyLoading ? '加载中...' : '--';
+      return;
+    }
+
+    const sum = report.summary || {};
+    modal.querySelector('[data-role="hist-total"]').textContent = formatCompactTokens(sum.totalTokens || 0);
+    modal.querySelector('[data-role="hist-total-sub"]').textContent =
+      `新输入 ${formatCompactTokens(sum.inputTokens || 0)} · 输出 ${formatCompactTokens(sum.outputTokens || 0)}`;
+    modal.querySelector('[data-role="hist-cost"]').textContent = formatUsd(sum.estimatedCostUsd || 0);
+    modal.querySelector('[data-role="hist-saved"]').textContent = `缓存已省 ${formatUsd(sum.cacheSavedUsd || 0)}`;
+    modal.querySelector('[data-role="hist-cache"]').textContent = `${Number(sum.cacheHitRate || 0).toFixed(1)}%`;
+    modal.querySelector('[data-role="hist-cache-sub"]').textContent =
+      `缓存读取 ${formatCompactTokens(sum.cacheReadTokens || 0)}`;
+    modal.querySelector('[data-role="hist-sessions"]').textContent =
+      `${sum.sessionCount || 0} / ${sum.callCount || 0}`;
+    modal.querySelector('[data-role="hist-channels"]').textContent =
+      `桌面 ${sum.desktopCalls || 0} · CLI ${sum.cliCalls || 0}`;
+
+    const hm = report.heatmap || {};
+    const days = Array.isArray(hm.days) ? hm.days : [];
+    modal.querySelector('[data-role="hist-hm-meta"]').textContent =
+      `活跃 ${hm.activeDays || 0} 天 · 峰值 ${formatCompactTokens(hm.maxDayTokens || 0)}`;
+
+    let hmHtml = '';
+    for (let w = 0; w < 12; w++) {
+      let col = '<div class="cr-hm-week">';
+      for (let d = 0; d < 7; d++) {
+        const item = days[w * 7 + d];
+        if (!item) {
+          col += '<div class="cr-hm-cell"></div>';
+        } else {
+          const lvl = item.level > 0 ? ` l${item.level}` : '';
+          const tip = `${item.date} · ${formatCompactTokens(item.totalTokens)} tokens · ${item.calls} 次 · ${formatUsd(item.costUsd)}`;
+          col += `<div class="cr-hm-cell${lvl}" title="${escapeHtml(tip)}"></div>`;
+        }
+      }
+      col += '</div>';
+      hmHtml += col;
+    }
+    modal.querySelector('[data-role="hist-hm-grid"]').innerHTML = hmHtml;
+
+    const models = Array.isArray(report.models) ? report.models : [];
+    modal.querySelector('[data-role="hist-models"]').innerHTML = models.length
+      ? models
+          .map(
+            (m) => `
+          <div class="cr-hist-model-row">
+            <div class="cr-hist-model-top">
+              <span class="cr-hist-model-name">${escapeHtml(m.displayName)}</span>
+              <span class="cr-hist-model-val">${formatCompactTokens(m.totalTokens)} · 命中 ${m.cacheHitRate}% · ${
+                m.priced ? formatUsd(m.estimatedCostUsd) : '未定价'
+              }</span>
+            </div>
+            <div class="cr-hist-model-bar">
+              <div class="cr-hist-model-fill" style="width:${Math.max(2, Math.min(100, m.sharePct || 0))}%"></div>
+            </div>
+          </div>`
+          )
+          .join('')
+      : '<div style="opacity:0.65;font-size:12px;">该周期暂无记录的会话 Token 消耗</div>';
+  }
+
+  /**
+   * 创建或获取独立样式与监控设置页面视图（双页签：外观与设置 / 历史用量与费用）
    */
   function getOrCreateSettingsModal() {
     let modal = document.getElementById(SETTINGS_MODAL_ID);
@@ -2867,64 +3431,140 @@
     modal.id = SETTINGS_MODAL_ID;
     modal.className = 'no-focus-agent-input';
     modal.innerHTML = `
-      <div class="cr-page-shell" role="dialog" aria-modal="true" aria-label="Context Ring 样式与监控设置">
+      <div class="cr-page-shell" role="dialog" aria-modal="true" aria-label="Context Ring 样式与用量看板">
         <div class="cr-page-topbar">
           <div class="cr-page-title-wrap">
-            <span class="cr-page-title">Context Ring 样式与设置</span>
+            <span class="cr-page-title">Context Ring</span>
             <span class="cr-page-badge">v${WIDGET_VERSION}</span>
+          </div>
+          <div class="cr-page-tabs" data-role="page-tabs">
+            <button type="button" class="cr-page-tab is-active" data-tab="appearance">外观与设置</button>
+            <button type="button" class="cr-page-tab" data-tab="history">历史用量与费用</button>
           </div>
           <button type="button" class="cr-page-close-btn" data-role="close-settings-btn">← 返回会话</button>
         </div>
 
-        <div class="cr-page-sec">
-          <div class="cr-page-sec-head">
-            <span class="cr-page-sec-title">选择外观形状（点击即时同步到输入框）</span>
-            <div class="cr-preview-ctrl">
-              <span data-role="preview-pct-label">实时水位</span>
-              <input type="range" min="0" max="100" step="1" data-role="preview-range" />
-              <button type="button" class="cr-page-pill" data-role="preview-reset-btn" style="padding:2px 8px;font-size:10.5px;">实时</button>
+        <div class="cr-tab-pane is-active" data-pane="appearance">
+          <div class="cr-page-sec">
+            <div class="cr-page-sec-head">
+              <span class="cr-page-sec-title">选择外观形状（点击即时同步到输入框）</span>
+              <div class="cr-preview-ctrl">
+                <span data-role="preview-pct-label">实时水位</span>
+                <input type="range" min="0" max="100" step="1" data-role="preview-range" />
+                <button type="button" class="cr-page-pill" data-role="preview-reset-btn" style="padding:2px 8px;font-size:10.5px;">实时</button>
+              </div>
+            </div>
+            <div class="cr-shape-grid" data-role="shape-grid">
+              ${STYLE_OPTIONS.map(
+                (opt) => `
+                <button type="button" class="cr-shape-card" data-style="${opt.id}">
+                  <div class="cr-shape-preview" data-preview-style="${opt.id}"></div>
+                  <div class="cr-shape-name">${opt.label}</div>
+                  <div class="cr-shape-desc">${opt.desc}</div>
+                </button>`
+              ).join('')}
             </div>
           </div>
-          <div class="cr-shape-grid" data-role="shape-grid">
-            ${STYLE_OPTIONS.map(
-              (opt) => `
-              <button type="button" class="cr-shape-card" data-style="${opt.id}">
-                <div class="cr-shape-preview" data-preview-style="${opt.id}"></div>
-                <div class="cr-shape-name">${opt.label}</div>
-                <div class="cr-shape-desc">${opt.desc}</div>
-              </button>`
-            ).join('')}
+
+          <div class="cr-page-sec">
+            <div class="cr-page-sec-head" style="margin-bottom:6px;">
+              <span class="cr-page-sec-title">模型上下文上限与显示偏好</span>
+              <span style="font-size:11.5px;opacity:0.7;" data-role="modal-model-tag">--</span>
+            </div>
+
+            <div class="cr-pref-row">
+              <span class="cr-pref-label">当前模型窗口上限</span>
+              <div class="cr-pill-row" data-role="modal-limit-row">
+                ${LIMIT_OPTIONS.map((opt) => `<button type="button" class="cr-page-pill" data-limit="${opt.value}">${opt.label}</button>`).join('')}
+              </div>
+            </div>
+            <div class="cr-custom-limits" data-role="modal-custom-limits"></div>
+
+            <div class="cr-pref-row">
+              <span class="cr-pref-label">挂载位置与动效</span>
+              <div class="cr-pill-row">
+                <button type="button" class="cr-page-pill" data-role="modal-toggle-pct">显示百分比</button>
+                <button type="button" class="cr-page-pill" data-role="modal-toggle-anim">动态效果</button>
+                <button type="button" class="cr-page-pill" data-role="modal-toggle-place">输入框靠右</button>
+              </div>
+            </div>
+
+            <div class="cr-pref-row">
+              <div style="flex:1;min-width:200px;">
+                <div class="cr-pref-label">压缩后防失忆（Post-Compact Rehydration）</div>
+                <div class="cr-rehydrate-desc">纯 Node.js 零依赖 <code>PreInvocation</code> Hook：执行 <code>/compact</code> 压缩后自动恢复用户需求时间线、近期摘要与工作区活跃文件。</div>
+                <div class="cr-rehydrate-alert" data-role="modal-rehydrate-alert" style="display:none;"></div>
+              </div>
+              <button type="button" class="cr-page-pill" data-role="modal-rehydrate-btn">未开启 · 启用</button>
+            </div>
+          </div>
+
+          <div class="cr-page-sec" style="margin-bottom:0;">
+            <div class="cr-page-sec-head" style="margin-bottom:6px;">
+              <span class="cr-page-sec-title">当前会话近 30 步上下文趋势（绿=缓存 / 蓝=新增输入）</span>
+              <span style="font-size:11.5px;opacity:0.7;" data-role="modal-session-meta">--</span>
+            </div>
+            <div class="cr-trend-bars" data-role="modal-trend-bars"></div>
           </div>
         </div>
 
-        <div class="cr-page-sec">
-          <div class="cr-page-sec-head" style="margin-bottom:6px;">
-            <span class="cr-page-sec-title">显示与挂载偏好</span>
+        <div class="cr-tab-pane" data-pane="history">
+          <div class="cr-page-sec">
+            <div class="cr-page-sec-head">
+              <span class="cr-page-sec-title">多周期 Token 消耗与预估 API 费用</span>
+              <div class="cr-pill-row" data-role="hist-period-row">
+                <button type="button" class="cr-page-pill" data-period="today">今日</button>
+                <button type="button" class="cr-page-pill" data-period="7d">近 7 天</button>
+                <button type="button" class="cr-page-pill is-active" data-period="30d">近 30 天</button>
+                <button type="button" class="cr-page-pill" data-period="all">全部</button>
+                <button type="button" class="cr-page-pill" data-role="hist-refresh-btn">刷新</button>
+              </div>
+            </div>
+            <div class="cr-hist-kpi-grid">
+              <div class="cr-hist-kpi">
+                <div class="cr-hist-kpi-label">总 Token 消耗</div>
+                <div class="cr-hist-kpi-val" data-role="hist-total">--</div>
+                <div class="cr-hist-kpi-sub" data-role="hist-total-sub">--</div>
+              </div>
+              <div class="cr-hist-kpi">
+                <div class="cr-hist-kpi-label">预估 API 费用</div>
+                <div class="cr-hist-kpi-val" data-role="hist-cost">--</div>
+                <div class="cr-hist-kpi-sub" data-role="hist-saved">缓存已省 --</div>
+              </div>
+              <div class="cr-hist-kpi">
+                <div class="cr-hist-kpi-label">全局缓存命中率</div>
+                <div class="cr-hist-kpi-val" data-role="hist-cache">--</div>
+                <div class="cr-hist-kpi-sub" data-role="hist-cache-sub">--</div>
+              </div>
+              <div class="cr-hist-kpi">
+                <div class="cr-hist-kpi-label">会话 / 调用</div>
+                <div class="cr-hist-kpi-val" data-role="hist-sessions">--</div>
+                <div class="cr-hist-kpi-sub" data-role="hist-channels">--</div>
+              </div>
+            </div>
+            <div class="cr-hist-disclaimer">基于本地会话日志与公开 Developer API 参考费率估算，不代表实际订阅扣费。</div>
           </div>
 
-          <div class="cr-pref-row">
-            <span class="cr-pref-label">上下文窗口上限</span>
-            <div class="cr-pill-row" data-role="modal-limit-row">
-              ${LIMIT_OPTIONS.map((opt) => `<button type="button" class="cr-page-pill" data-limit="${opt.value}">${opt.label}</button>`).join('')}
+          <div class="cr-page-sec">
+            <div class="cr-page-sec-head" style="margin-bottom:8px;">
+              <span class="cr-page-sec-title">近 12 周活跃热力图</span>
+              <span style="font-size:11.5px;opacity:0.72;" data-role="hist-hm-meta">--</span>
+            </div>
+            <div class="cr-hm-grid" data-role="hist-hm-grid"></div>
+            <div class="cr-hm-foot">
+              <span>悬停任意方块可查看当日消耗与估算费用</span>
+              <span>低 ▫️ 🟩 深绿 高</span>
             </div>
           </div>
 
-          <div class="cr-pref-row">
-            <span class="cr-pref-label">挂载位置与动效</span>
-            <div class="cr-pill-row">
-              <button type="button" class="cr-page-pill" data-role="modal-toggle-pct">显示百分比</button>
-              <button type="button" class="cr-page-pill" data-role="modal-toggle-anim">动态效果</button>
-              <button type="button" class="cr-page-pill" data-role="modal-toggle-place">输入框靠右</button>
+          <div class="cr-page-sec" style="margin-bottom:0;">
+            <div class="cr-page-sec-head" style="margin-bottom:8px;">
+              <span class="cr-page-sec-title">模型消耗与参考费用排行</span>
+            </div>
+            <div class="cr-hist-models" data-role="hist-models">
+              <div style="opacity:0.65;font-size:12px;">切换到本页签即可自动加载</div>
             </div>
           </div>
-        </div>
-
-        <div class="cr-page-sec" style="margin-bottom:0;">
-          <div class="cr-page-sec-head" style="margin-bottom:6px;">
-            <span class="cr-page-sec-title">当前会话近 30 步上下文趋势（绿=缓存 / 蓝=新增输入）</span>
-            <span style="font-size:11.5px;opacity:0.7;" data-role="modal-session-meta">--</span>
-          </div>
-          <div class="cr-trend-bars" data-role="modal-trend-bars"></div>
         </div>
       </div>
     `;
@@ -2939,7 +3579,35 @@
       closeSettingsPage();
     });
 
-    // 选择 5 种形状
+    // 双页签切换
+    modal.querySelector('[data-role="page-tabs"]').addEventListener('click', (e) => {
+      const tabBtn = e.target.closest('[data-tab]');
+      if (!tabBtn) return;
+      activeSettingsTab = tabBtn.getAttribute('data-tab') || 'appearance';
+      for (const b of modal.querySelectorAll('[data-role="page-tabs"] [data-tab]')) {
+        b.classList.toggle('is-active', b.getAttribute('data-tab') === activeSettingsTab);
+      }
+      for (const pane of modal.querySelectorAll('.cr-tab-pane')) {
+        pane.classList.toggle('is-active', pane.getAttribute('data-pane') === activeSettingsTab);
+      }
+      if (activeSettingsTab === 'history') {
+        void loadHistoryReportIntoModal(historyPeriod);
+      }
+    });
+
+    // 历史用量周期切换与刷新
+    modal.querySelector('[data-role="hist-period-row"]').addEventListener('click', (e) => {
+      const refreshBtn = e.target.closest('[data-role="hist-refresh-btn"]');
+      if (refreshBtn) {
+        void loadHistoryReportIntoModal(historyPeriod);
+        return;
+      }
+      const periodBtn = e.target.closest('[data-period]');
+      if (!periodBtn) return;
+      void loadHistoryReportIntoModal(periodBtn.getAttribute('data-period') || '30d');
+    });
+
+    // 选择 3 种精选形状
     modal.querySelector('[data-role="shape-grid"]').addEventListener('click', (e) => {
       const card = e.target.closest('.cr-shape-card');
       if (!card) return;
@@ -2961,10 +3629,56 @@
       renderSettingsPageContent();
     });
 
-    // 上限切换
+    // 上限切换（按当前模型记忆或全局回退）
     modal.querySelector('[data-role="modal-limit-row"]').addEventListener('click', (e) => {
       const btn = e.target.closest('[data-limit]');
-      if (btn) applySettingPatch({ contextLimit: Number(btn.getAttribute('data-limit')) });
+      if (!btn) return;
+      const nextLimit = Number(btn.getAttribute('data-limit'));
+      const allFooters = Array.from(document.body.getElementsByClassName('agy-composer-footer'));
+      const footerRef =
+        (activeFooterEl && isElementVisible(activeFooterEl) ? activeFooterEl : null) ||
+        (lastOpenedFooterEl && isElementVisible(lastOpenedFooterEl) ? lastOpenedFooterEl : null) ||
+        allFooters.find((el) => isElementVisible(el)) ||
+        allFooters[0] ||
+        null;
+      const ctx = extractComposerContext(footerRef);
+      const cached = ctx.conversationId ? usageCache.get(ctx.conversationId) : null;
+      const activeModel = ctx.modelLabel || cached?.modelName || '';
+      if (activeModel && activeModel !== 'Model') {
+        applySettingPatch({
+          contextLimit: 0,
+          setModelContextLimit: { modelName: activeModel, limit: nextLimit },
+        });
+      } else {
+        applySettingPatch({ contextLimit: nextLimit });
+      }
+    });
+
+    // 清除单模型自定义上限
+    modal.querySelector('[data-role="modal-custom-limits"]').addEventListener('click', (e) => {
+      const clearBtn = e.target.closest('[data-clear-model]');
+      if (!clearBtn) return;
+      applySettingPatch({
+        setModelContextLimit: { modelKey: clearBtn.getAttribute('data-clear-model'), limit: 0 },
+      });
+    });
+
+    // 压缩后防失忆一键启停
+    modal.querySelector('[data-role="modal-rehydrate-btn"]').addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      const nextEnabled = !rehydrateStatus.enabled;
+      btn.disabled = true;
+      btn.textContent = nextEnabled ? '启用中...' : '关闭中...';
+      try {
+        const resp = await callHostRpc('rehydrate.set', { enabled: nextEnabled });
+        if (resp && resp.rehydrate) {
+          rehydrateStatus = Object.assign({}, rehydrateStatus, resp.rehydrate);
+        }
+      } finally {
+        btn.disabled = false;
+        lastPopoverFingerprint = '';
+        renderSettingsPageContent();
+      }
     });
 
     // 显示开关与位置切换
@@ -2983,7 +3697,7 @@
   }
 
   /**
-   * 渲染独立样式设置页面内的 5 种动态大号形状卡片与趋势图
+   * 渲染独立样式设置页面内的 3 种动态大号形状卡片、防失忆状态与趋势图
    */
   function renderSettingsPageContent() {
     const modal = getOrCreateSettingsModal();
@@ -2999,7 +3713,8 @@
     const { conversationId, modelLabel } = extractComposerContext(footerRef);
     const data =
       (conversationId ? usageCache.get(conversationId) : null) || createEmptyWidgetUsage(modelLabel);
-    const limit = Number(currentSettings.contextLimit || 512000);
+    const resolvedLimit = resolveEffectiveLimitForUi(data, modelLabel);
+    const limit = resolvedLimit.limit;
     const realPct = limit > 0 ? Math.min(100, (Number(data.totalTokens || 0) / limit) * 100) : 0;
     const previewPct = settingsPreviewPct === null ? realPct : settingsPreviewPct;
     const hitRate = Number(data.cacheHitRate || 88);
@@ -3035,8 +3750,40 @@
       }
     }
 
+    modal.querySelector('[data-role="modal-model-tag"]').textContent =
+      `${resolvedLimit.modelName || '全局默认'} · 当前 ${formatCompactTokens(limit)} (${resolvedLimit.source})`;
+
     for (const btn of modal.querySelectorAll('[data-role="modal-limit-row"] [data-limit]')) {
-      btn.classList.toggle('is-active', Number(btn.getAttribute('data-limit')) === limit);
+      const val = Number(btn.getAttribute('data-limit'));
+      btn.classList.toggle('is-active', resolvedLimit.auto ? val === 0 : val === limit);
+    }
+
+    const customEntries = Object.entries(currentSettings.modelContextLimits || {});
+    modal.querySelector('[data-role="modal-custom-limits"]').innerHTML = customEntries.length
+      ? customEntries
+          .map(
+            ([k, v]) =>
+              `<span class="cr-limit-tag"><span>${escapeHtml(k)}: ${formatCompactTokens(v)}</span><button type="button" data-clear-model="${escapeHtml(k)}" title="恢复自动上限">×</button></span>`
+          )
+          .join('')
+      : '';
+
+    const rhBtn = modal.querySelector('[data-role="modal-rehydrate-btn"]');
+    if (rhBtn) {
+      rhBtn.classList.toggle('is-ok', Boolean(rehydrateStatus.enabled));
+      rhBtn.textContent = rehydrateStatus.enabled ? '✓ 已开启 · 点击停用' : '未开启 · 一键启用';
+    }
+    const rhAlert = modal.querySelector('[data-role="modal-rehydrate-alert"]');
+    if (rhAlert) {
+      if (rehydrateStatus.error) {
+        rhAlert.style.display = 'block';
+        rhAlert.textContent = `状态异常：${rehydrateStatus.error}`;
+      } else if (rehydrateStatus.externalConflict) {
+        rhAlert.style.display = 'block';
+        rhAlert.textContent = `检测到 hooks.json 已启用同类 Hook (${rehydrateStatus.externalHookName})，建议仅开启其一以避免重复注入。`;
+      } else {
+        rhAlert.style.display = 'none';
+      }
     }
 
     const pctBtn = modal.querySelector('[data-role="modal-toggle-pct"]');
@@ -3051,8 +3798,10 @@
     placeBtn.classList.toggle('is-active', true);
     placeBtn.textContent = currentSettings.placement === 'left' ? '位置：输入框靠左' : '位置：输入框靠右';
 
+    const sp = data.speed;
+    const speedSuffix = sp?.displayTps ? ` · ${sp.displayTps.toFixed(1)} tok/s` : '';
     modal.querySelector('[data-role="modal-session-meta"]').textContent =
-      `${formatCompactTokens(data.totalTokens || 0)} / ${formatCompactTokens(limit)} · 缓存命中 ${(data.cacheHitRate || 0).toFixed(1)}%`;
+      `${formatCompactTokens(data.totalTokens || 0)} / ${formatCompactTokens(limit)} · 缓存命中 ${(data.cacheHitRate || 0).toFixed(1)}%${speedSuffix}`;
 
     const hist = Array.isArray(data.history) ? data.history : [];
     const lastHist = hist.length ? hist[hist.length - 1] : null;
@@ -3080,6 +3829,15 @@
     const modal = getOrCreateSettingsModal();
     renderSettingsPageContent();
     modal.classList.add('is-open');
+    void callHostRpc('rehydrate.status', {}).then((resp) => {
+      if (resp && resp.ok && resp.rehydrate) {
+        rehydrateStatus = Object.assign({}, rehydrateStatus, resp.rehydrate);
+        if (isSettingsModalOpen()) renderSettingsPageContent();
+      }
+    });
+    if (activeSettingsTab === 'history') {
+      void loadHistoryReportIntoModal(historyPeriod);
+    }
   }
 
   /**
@@ -3104,6 +3862,7 @@
 
     const pop = getOrCreatePopover();
     void ensureQuotaSummaryFresh(false, footerEl);
+    void ensureAvailableModelsFresh(footerEl);
     renderPopoverData(footerEl, true);
     pop.classList.add('is-open');
 
@@ -3142,13 +3901,122 @@
   }
 
   /**
+   * 提取当前输入框对应的纯净模型系列名（优先使用 React 控制器，兜底去除末尾思考等级词）
+   */
+  function resolveFooterModelFamily(footerEl, fallbackModelLabel = '') {
+    const controller = getThinkingEffortController(footerEl);
+    if (controller && controller.family) return controller.family;
+    const parsed = parseModelFamilyAndEffort(fallbackModelLabel);
+    const raw = String(parsed.family || fallbackModelLabel || '').trim();
+    if (!raw) return '';
+    return raw.replace(/\s+(?:minimal|low|med|medium|high|xhigh|extra\s+high|max|ultra)$/i, '').trim();
+  }
+
+  /**
+   * 在单个 .agy-composer-footer 模型选择器右侧挂载或更新 W / H 双圆环额度徽章
+   */
+  function mountOrUpdateFooterQuota(footerEl, fallbackModelLabel = '') {
+    let quotaHostEl = footerEl.querySelector(`.${QUOTA_HOST_CLASS}`);
+
+    if (!currentSettings.enabled) {
+      if (quotaHostEl) quotaHostEl.remove();
+      return;
+    }
+
+    const leftGroup = footerEl.children[0] || footerEl;
+    if (!leftGroup) return;
+
+    const modelBtn =
+      footerEl.querySelector('[data-testid="model-selector-trigger"]') ||
+      footerEl.closest?.('.surface-composer-card')?.querySelector?.('[data-testid="model-selector-trigger"]') ||
+      null;
+
+    // 向上寻找包含模型选择器的第一层横向 flex 容器（如与第三方测速组件共享的容器），把双圆环紧贴模型按钮右侧插入
+    let anchor = modelBtn;
+    let targetContainer = leftGroup;
+    while (anchor && anchor.parentElement && anchor.parentElement !== leftGroup) {
+      const parent = anchor.parentElement;
+      const parentDisplay =
+        typeof getComputedStyle === 'function' ? String(getComputedStyle(parent)?.display || '') : '';
+      if (parentDisplay.includes('flex')) {
+        targetContainer = parent;
+        break;
+      }
+      anchor = parent;
+    }
+
+    if (!quotaHostEl) {
+      quotaHostEl = document.createElement('div');
+      quotaHostEl.className = `${QUOTA_HOST_CLASS} cr-quota-pair no-focus-agent-input`;
+      quotaHostEl.setAttribute('data-testid', 'context-ring-quota-badges');
+      quotaHostEl.setAttribute('role', 'button');
+      quotaHostEl.setAttribute('tabindex', '-1');
+
+      quotaHostEl.addEventListener('mouseenter', () => {
+        const fam = quotaHostEl.dataset.quotaFamily || '';
+        if (fam) showQuotaTip(quotaHostEl, fam);
+      });
+      quotaHostEl.addEventListener('mouseleave', () => {
+        hideQuotaTip();
+      });
+      quotaHostEl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        void ensureQuotaSummaryFresh(true, footerEl).then(() => {
+          const fam = quotaHostEl.dataset.quotaFamily || '';
+          if (fam && quotaHostEl.matches?.(':hover')) {
+            showQuotaTip(quotaHostEl, fam);
+          }
+        });
+      });
+    }
+
+    if (anchor && anchor.parentElement === targetContainer) {
+      const childrenArr = Array.from(targetContainer.children || []);
+      const anchorIdx = childrenArr.indexOf(anchor);
+      const nextSibling = anchorIdx >= 0 ? childrenArr[anchorIdx + 1] || null : null;
+      if (quotaHostEl.parentElement !== targetContainer || nextSibling !== quotaHostEl) {
+        targetContainer.insertBefore(quotaHostEl, nextSibling);
+      }
+    } else if (quotaHostEl.parentElement !== targetContainer) {
+      targetContainer.appendChild(quotaHostEl);
+    }
+
+    const familyName = resolveFooterModelFamily(footerEl, fallbackModelLabel);
+    const dark = isDarkTheme();
+    const renderSig = `${familyName}|${quotaCacheVersion}|${dark ? 1 : 0}`;
+    if (quotaHostEl.dataset.renderSig !== renderSig) {
+      quotaHostEl.dataset.renderSig = renderSig;
+      quotaHostEl.dataset.quotaFamily = familyName;
+      const qVis = buildQuotaPairVisual(familyName, 16, dark);
+      quotaHostEl.innerHTML = qVis.html;
+      quotaHostEl.setAttribute(
+        'aria-label',
+        qVis.tooltip ? `${familyName} ${qVis.tooltip}` : `${familyName || '当前模型'} 额度`
+      );
+    }
+  }
+
+  /**
+   * 刷新页面上全部输入框底栏中的 W / H 额度双圆环
+   */
+  function refreshAllFooterQuotaBadges() {
+    if (!document.body) return;
+    const footers = Array.from(document.body.getElementsByClassName('agy-composer-footer'));
+    for (const footerEl of footers) {
+      if (!document.body.contains(footerEl)) continue;
+      mountOrUpdateFooterQuota(footerEl);
+    }
+  }
+
+  /**
    * 在单个 .agy-composer-footer 内挂载或更新监控按钮
    */
-  function mountOrUpdateFooter(footerEl, usageData) {
+  function mountOrUpdateFooter(footerEl, usageData, activeModelLabel = '') {
     let hostEl = footerEl.querySelector(`.${HOST_CLASS}`);
 
     if (!currentSettings.enabled) {
       if (hostEl) hostEl.remove();
+      mountOrUpdateFooterQuota(footerEl, activeModelLabel);
       return false;
     }
 
@@ -3196,7 +4064,8 @@
       }
     }
 
-    const limit = Number(currentSettings.contextLimit || 512000);
+    const resolvedLimit = resolveEffectiveLimitForUi(usageData, usageData?.modelName || '');
+    const limit = resolvedLimit.limit;
     const total = Number(usageData?.totalTokens || 0);
     const hitRate = Number(usageData?.cacheHitRate || 0);
     const pct = limit > 0 ? (total / limit) * 100 : 0;
@@ -3226,6 +4095,8 @@
       pctText.style.display = currentSettings.showPercentText ? '' : 'none';
     }
 
+    mountOrUpdateFooterQuota(footerEl, activeModelLabel || usageData?.modelName || '');
+
     return true;
   }
 
@@ -3252,14 +4123,23 @@
 
       if (activeCid) {
         if (fetchRemote && currentSettings.enabled) {
-          const resp = await callHostRpc('usage.get', { conversationId: activeCid });
+          const resp = await callHostRpc('usage.get', { conversationId: activeCid, modelName: activeModel });
           if (resp && resp.ok && resp.usage) {
             const respCid = String(resp.usage.conversationId || '').trim();
             if (!respCid || respCid === activeCid) {
               usageCache.set(activeCid, resp.usage);
             }
             if (resp.settings) {
-              currentSettings = Object.assign({}, currentSettings, resp.settings);
+              currentSettings = Object.assign({}, currentSettings, resp.settings, {
+                styleMode: normalizeWidgetStyle(resp.settings.styleMode ?? currentSettings.styleMode),
+                modelContextLimits:
+                  resp.settings.modelContextLimits && typeof resp.settings.modelContextLimits === 'object'
+                    ? Object.assign({}, resp.settings.modelContextLimits)
+                    : Object.assign({}, currentSettings.modelContextLimits || {}),
+              });
+            }
+            if (resp.rehydrate && typeof resp.rehydrate === 'object') {
+              rehydrateStatus = Object.assign({}, rehydrateStatus, resp.rehydrate);
             }
           } else if (!usageCache.has(activeCid) && window.__CONTEXT_RING_SEED_USAGE__) {
             const seed = window.__CONTEXT_RING_SEED_USAGE__;
@@ -3294,8 +4174,11 @@
       const renderUsage = activeCid
         ? usageCache.get(activeCid) || createEmptyWidgetUsage(activeModel)
         : createEmptyWidgetUsage(activeModel);
-      if (mountOrUpdateFooter(footerEl, renderUsage)) {
+      if (mountOrUpdateFooter(footerEl, renderUsage, activeModel)) {
         mountedCount++;
+      }
+      if (fetchRemote && currentSettings.enabled) {
+        void ensureQuotaSummaryFresh(false, footerEl);
       }
     }
 
@@ -3369,7 +4252,8 @@
       if (
         target.closest?.(`#${SETTINGS_MODAL_ID}`) ||
         target.closest?.(`#${POPOVER_ID}`) ||
-        target.closest?.(`.${HOST_CLASS}`)
+        target.closest?.(`.${HOST_CLASS}`) ||
+        target.closest?.(`.${QUOTA_HOST_CLASS}`)
       ) {
         return false;
       }
@@ -3393,7 +4277,10 @@
   void syncAllComposerFooters(true);
   setTimeout(() => {
     const firstFooter = document.body && document.body.getElementsByClassName('agy-composer-footer')[0];
-    if (firstFooter) void ensureQuotaSummaryFresh(false, firstFooter);
+    if (firstFooter) {
+      void ensureQuotaSummaryFresh(false, firstFooter);
+      void ensureAvailableModelsFresh(firstFooter);
+    }
   }, 400);
 
   /**
@@ -3435,9 +4322,13 @@
       for (const el of Array.from(document.body.getElementsByClassName(HOST_CLASS))) {
         el.remove();
       }
+      for (const el of Array.from(document.body.getElementsByClassName(QUOTA_HOST_CLASS))) {
+        el.remove();
+      }
     }
 
     delete window.__CONTEXT_RING_TRIGGER_COMPACT__;
+    delete window.__contextRingReceiveRehydrate;
     window.__CONTEXT_RING_INSTALLED__ = false;
     window.__CONTEXT_RING_MOUNTED_COUNT__ = 0;
   };

@@ -12,6 +12,7 @@ import {
 } from '../lib/paths.mjs';
 import { createSettingsStore } from '../lib/settings.mjs';
 import { getConversationUsage } from '../lib/transcript-parser.mjs';
+import { getRehydrateStatus, removeRehydrateHook } from '../lib/rehydrate-manager.mjs';
 import {
   configureClientLaunchers,
   restoreClientLaunchers,
@@ -288,8 +289,10 @@ async function runInstall() {
   });
   const settingsStore = createSettingsStore(paths.dataDir);
   const currentSettings = settingsStore.set({});
+  const limitLabel =
+    Number(currentSettings.contextLimit) > 0 ? `${Math.round(currentSettings.contextLimit / 1000)}k` : '自动识别';
   console.log(
-    `  -> 已启用插件 (当前形态: ${currentSettings.styleMode}, 上限: ${currentSettings.contextLimit / 1000}k, 零 app.asar 修改)`
+    `  -> 已启用插件 (当前形态: ${currentSettings.styleMode}, 上限: ${limitLabel}, 零 app.asar 修改)`
   );
 
   console.log('\n=== [3/4] 配置客户端快捷方式本地调试参数 ===');
@@ -343,6 +346,11 @@ async function runUninstall(keepSettings = false) {
         }
       }
     });
+  }
+
+  const rehydrateClean = removeRehydrateHook({ homeDir: paths.home, pluginRoot: paths.installDir });
+  if (rehydrateClean.ok) {
+    console.log('  -> 已检查并无痕清理压缩后防失忆 Hook 条目');
   }
 
   const restoreRes = restoreClientLaunchers({ home: paths.home, dataDir: paths.dataDir });
@@ -421,11 +429,19 @@ async function runStatus() {
         : '未运行（重启客户端后由 Antigravity 自动拉起）'
     }`
   );
+  const rehydrate = getRehydrateStatus({ homeDir: paths.home, pluginRoot: paths.installDir });
+  const limitLabel =
+    Number(settings.contextLimit) > 0 ? `${Math.round(settings.contextLimit / 1000)}k` : '自动识别';
   console.log(
-    `5. 当前样式配置 : 形态=${settings.styleMode}, 配色=${settings.palette}, 上限=${settings.contextLimit / 1000}k, 位置=${settings.placement}`
+    `5. 当前样式配置 : 形态=${settings.styleMode}, 配色=${settings.palette}, 上限=${limitLabel}, 位置=${settings.placement}`
   );
   console.log(
-    `6. 最近活跃会话 : ${
+    `6. 压缩后防失忆 : ${rehydrate.enabled ? '已开启 (PreInvocation Hook)' : '未开启'}${
+      rehydrate.externalConflict ? ` [提示: 检测到同类 Hook ${rehydrate.externalHookName}]` : ''
+    }`
+  );
+  console.log(
+    `7. 最近活跃会话 : ${
       usage.conversationId
         ? `${usage.conversationId.slice(0, 8)}… (总计 ${usage.totalTokens.toLocaleString()} tokens, 缓存命中 ${usage.cacheHitRate}%)`
         : '未检测到会话日志'

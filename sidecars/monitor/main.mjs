@@ -7,6 +7,9 @@ import { fileURLToPath } from 'node:url';
 import { getPluginPaths } from '../../lib/paths.mjs';
 import { createSettingsStore } from '../../lib/settings.mjs';
 import { createEmptyUsage, getConversationUsage } from '../../lib/transcript-parser.mjs';
+import { enrichUsageWithTelemetry } from '../../lib/ls-telemetry.mjs';
+import { getUsageHistoryReport } from '../../lib/usage-history.mjs';
+import { getRehydrateStatus, setRehydrateEnabled } from '../../lib/rehydrate-manager.mjs';
 import { configureClientLaunchers, getManualLaunchHint } from '../../lib/launcher.mjs';
 import { startCdpInjectionHost } from '../../lib/cdp-host.mjs';
 import { renderSidecarDashboardHtml } from '../../lib/dashboard-ui.mjs';
@@ -156,6 +159,8 @@ async function main() {
     settingsStore,
     version,
     knownDistrosFile,
+    dataDir: paths.dataDir,
+    pluginRoot: PLUGIN_ROOT,
   });
 
   await startRuntimeControlServer(path.join(paths.dataDir, 'runtime'), version, cdpHost);
@@ -215,6 +220,10 @@ async function main() {
           usage = getConversationUsage('', { knownDistrosFile, allowLatestFallback: true });
         }
 
+        if (usage && usage.conversationId) {
+          usage = await enrichUsageWithTelemetry(usage);
+        }
+
         res.writeHead(200, {
           'Content-Type': 'application/json; charset=utf-8',
           'Cache-Control': 'no-store',
@@ -226,9 +235,41 @@ async function main() {
             settings: settingsStore.get(),
             usage,
             health,
+            rehydrate: getRehydrateStatus({ pluginRoot: PLUGIN_ROOT }),
             manualLaunchHint: getManualLaunchHint(),
           })
         );
+        return;
+      }
+
+      if (req.method === 'GET' && urlObj.pathname === '/api/history') {
+        const period = String(urlObj.searchParams.get('period') || '30d');
+        const report = getUsageHistoryReport({
+          period,
+          knownDistrosFile,
+          cacheDir: paths.dataDir,
+        });
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+        });
+        res.end(JSON.stringify({ ok: true, report }));
+        return;
+      }
+
+      if (req.method === 'POST' && urlObj.pathname === '/api/rehydrate') {
+        try {
+          const body = await readRequestJson(req);
+          const result = setRehydrateEnabled(Boolean(body?.enabled), { pluginRoot: PLUGIN_ROOT });
+          if (result.ok) {
+            await cdpHost.broadcastRehydrate(result.status);
+          }
+          res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: result.ok, error: result.error || '', rehydrate: result.status }));
+        } catch (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, error: err?.message || String(err) }));
+        }
         return;
       }
 

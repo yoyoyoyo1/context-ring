@@ -9,7 +9,9 @@ import {
   COLOR_PALETTES,
   CONTEXT_LIMITS,
   DEFAULT_SETTINGS,
+  normalizeModelKey,
   normalizeSettings,
+  resolveEffectiveContextLimit,
   createSettingsStore,
 } from '../lib/settings.mjs';
 import {
@@ -19,6 +21,31 @@ import {
   parseTranscriptFile,
   getConversationUsage,
 } from '../lib/transcript-parser.mjs';
+import {
+  parseDurationSec,
+  calculateSpeedExperience,
+  extractChatModelTelemetry,
+  buildModelCatalogIndex,
+  lookupCatalogModel,
+  enrichUsageWithTelemetry,
+  clearTelemetryCaches,
+} from '../lib/ls-telemetry.mjs';
+import {
+  resolvePricingModelKey,
+  estimateTokenCost,
+  getUsageHistoryReport,
+} from '../lib/usage-history.mjs';
+import {
+  REHYDRATE_HOOK_NAME,
+  getRehydrateStatus,
+  setRehydrateEnabled,
+  removeRehydrateHook,
+} from '../lib/rehydrate-manager.mjs';
+import {
+  redactSecrets,
+  truncateUtf8WithFences,
+  runRehydratePayload,
+} from '../scripts/rehydrate-hook.mjs';
 import {
   injectDebugPortArg,
   removeDebugPortArg,
@@ -46,17 +73,24 @@ function withTempDir(fn) {
     });
 }
 
-test('settings: 默认值校验、非法值兜底与原子持久化读写', async () => {
+test('settings: 3 种精选形态、旧形态平滑回退与按模型上下文上限记忆', async () => {
   await withTempDir((tempDir) => {
+    assert.deepEqual(STYLE_MODES, ['bottle', 'caterpillar', 'ring']);
+
     const store = createSettingsStore(tempDir);
     const initial = store.get();
-    assert.deepEqual(initial, DEFAULT_SETTINGS);
+    assert.deepEqual(initial, normalizeSettings(DEFAULT_SETTINGS));
+    assert.equal(initial.contextLimit, 0);
 
-    // 验证所有 5 种形态均可合法保存
+    // 验证所有 3 种形态均可合法保存
     for (const styleMode of STYLE_MODES) {
       const saved = store.set({ styleMode });
       assert.equal(saved.styleMode, styleMode);
     }
+
+    // 验证已移除的旧形态（donut / capsule）平滑回退到默认 bottle
+    assert.equal(normalizeSettings({ styleMode: 'donut' }).styleMode, 'bottle');
+    assert.equal(normalizeSettings({ styleMode: 'capsule' }).styleMode, 'bottle');
 
     // 验证配色固定为自动告警，任意传入配色均归一化为 auto
     assert.deepEqual(COLOR_PALETTES, ['auto']);
@@ -64,6 +98,38 @@ test('settings: 默认值校验、非法值兜底与原子持久化读写', asyn
     for (const limit of CONTEXT_LIMITS) {
       assert.equal(store.set({ contextLimit: limit }).contextLimit, limit);
     }
+
+    // 验证按模型记忆上下文上限与优先级解析
+    assert.equal(normalizeModelKey('Gemini 4 Neon (XHigh)'), 'gemini-4-neon');
+    assert.equal(normalizeModelKey('claude-opus-5-5-high'), 'claude-opus-5-5');
+
+    store.set({ contextLimit: 0, setModelContextLimit: { modelName: 'Gemini 4 Neon (High)', limit: 1000000 } });
+    const afterCustom = store.get();
+    assert.equal(afterCustom.modelContextLimits['gemini-4-neon'], 1000000);
+
+    const customRes = resolveEffectiveContextLimit({
+      settings: afterCustom,
+      modelName: 'Gemini 4 Neon (XHigh)',
+      detectedLimit: 512000,
+    });
+    assert.equal(customRes.limit, 1000000);
+    assert.equal(customRes.source, 'model-custom');
+    assert.equal(customRes.auto, false);
+
+    // 未自定义的其他模型在自动模式下优先采用宿主真实探测上限
+    const detectedRes = resolveEffectiveContextLimit({
+      settings: afterCustom,
+      modelName: 'Claude Opus 5.5 (High)',
+      detectedLimit: 1000000,
+      catalogLimit: 512000,
+    });
+    assert.equal(detectedRes.limit, 1000000);
+    assert.equal(detectedRes.source, 'detected');
+    assert.equal(detectedRes.auto, true);
+
+    // 清除单模型自定义上限后恢复自动探测
+    store.set({ setModelContextLimit: { modelName: 'Gemini 4 Neon (XHigh)', limit: 0 } });
+    assert.equal(store.get().modelContextLimits['gemini-4-neon'], undefined);
 
     // 验证非法字段自动回退默认值
     const normalized = normalizeSettings({
@@ -293,6 +359,8 @@ test('cdp-host & dashboard-ui: 目标识别、注入脚本语法合法性与工�
   assert.ok(injectedSource.includes('retrieveUserQuotaSummary'));
   assert.ok(injectedSource.includes('buildQuotaPairVisual'));
   assert.ok(injectedSource.includes('current-model-quota'));
+  assert.ok(injectedSource.includes('agy-context-ring-quota-host'));
+  assert.ok(injectedSource.includes('mountOrUpdateFooterQuota'));
   assert.ok(injectedSource.includes('agy-context-ring-quota-tip'));
   assert.ok(injectedSource.includes('showQuotaTip'));
   assert.ok(injectedSource.includes('cr-gauge-track'));
@@ -304,12 +372,21 @@ test('cdp-host & dashboard-ui: 目标识别、注入脚本语法合法性与工�
   assert.ok(injectedSource.includes('explicitBlankComposer'));
   assert.equal(injectedSource.includes('Array.from(usageCache.values())[0]'), false);
 
-  const html = renderSidecarDashboardHtml({ version: '1.0.0' });
+  const html = renderSidecarDashboardHtml({ version: '1.1.0' });
   assert.equal(html.includes('paletteGroup'), false);
+  assert.equal(html.includes('data-style="donut"'), false);
+  assert.equal(html.includes('data-style="capsule"'), false);
+  assert.equal(injectedSource.includes("id: 'donut'"), false);
+  assert.equal(injectedSource.includes("id: 'capsule'"), false);
+  assert.ok(injectedSource.includes('speed-bar'));
+  assert.ok(injectedSource.includes('modal-rehydrate-btn'));
+  assert.ok(injectedSource.includes('hist-hm-grid'));
   for (const mode of STYLE_MODES) {
     assert.ok(html.includes(`data-style="${mode}"`), `缺少样式按钮: ${mode}`);
   }
   assert.ok(html.includes('/api/state'));
+  assert.ok(html.includes('/api/history'));
+  assert.ok(html.includes('/api/rehydrate'));
   assert.ok(html.includes('/api/settings'));
   assert.ok(html.includes('/api/compact'));
 });
@@ -628,4 +705,290 @@ test('composer-widget: 新开空白窗口与切换空白会话严格归零，绝
   assert.equal(sandbox.__CONTEXT_RING_ACTIVE_CID__, '');
 
   sandbox.__CONTEXT_RING_CLEANUP__();
+});
+
+test('ls-telemetry: 实时速度解析、体验评分、模型目录上限与零报错降级', async () => {
+  clearTelemetryCaches();
+  assert.equal(Number(parseDurationSec('6.569948100s').toFixed(3)), 6.57);
+  assert.equal(parseDurationSec('450ms'), 0.45);
+  assert.equal(parseDurationSec('1m2.5s'), 62.5);
+  assert.equal(parseDurationSec({ seconds: 2, nanos: 500000000 }), 2.5);
+
+  // 小样本不强行造分
+  assert.equal(
+    calculateSpeedExperience({ outputTokens: 8, ttftSec: 1.0, streamingSec: 0.2, totalDurationSec: 1.2 }).available,
+    false
+  );
+
+  // 正常流式生成返回合理体验分与等级
+  const exp = calculateSpeedExperience({
+    outputTokens: 1063,
+    totalInputTokens: 200000,
+    ttftSec: 6.57,
+    streamingSec: 6.79,
+    totalDurationSec: 13.36,
+    streamSpeed: 156.6,
+  });
+  assert.equal(exp.available, true);
+  assert.ok(exp.score > 70 && exp.score <= 100);
+  assert.ok(['S', 'A', 'B'].includes(exp.grade));
+
+  const parsedCm = extractChatModelTelemetry({
+    model: 'MODEL_PLACEHOLDER_M535',
+    timeToFirstToken: '6.57s',
+    streamingDuration: '6.79s',
+    usage: {
+      inputTokens: '3691',
+      cacheReadTokens: '197274',
+      outputTokens: '1063',
+      thinkingOutputTokens: '334',
+      responseOutputTokens: '729',
+    },
+    chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 512000 } },
+  });
+  assert.equal(parsedCm.maxContextTokens, 512000);
+  assert.equal(parsedCm.speed.thinkingTokens, 334);
+  assert.equal(parsedCm.speed.responseTokens, 729);
+  assert.ok(parsedCm.speed.displayTps > 150);
+
+  const catalog = buildModelCatalogIndex({
+    response: {
+      models: {
+        'claude-opus-5-5-high': {
+          displayName: 'Claude Opus 5.5 (High)',
+          maxTokens: 1000000,
+          model: 'MODEL_PLACEHOLDER_M402',
+        },
+      },
+    },
+  });
+  assert.equal(lookupCatalogModel(catalog, 'Claude Opus 5.5 (Low)')?.maxTokens, 1000000);
+
+  // 模拟 Language Server RPC 融合与离线降级
+  const fakeFetch = async (url) => {
+    if (url.endsWith('/GetCascadeTrajectory')) {
+      return { ok: true, json: async () => ({ numTotalGeneratorMetadata: 2 }) };
+    }
+    if (url.endsWith('/GetCascadeTrajectoryGeneratorMetadata')) {
+      return {
+        ok: true,
+        json: async () => ({
+          generatorMetadata: [
+            {
+              chatModel: {
+                model: 'MODEL_PLACEHOLDER_M402',
+                timeToFirstToken: '2.0s',
+                streamingDuration: '5.0s',
+                usage: { outputTokens: 500, thinkingOutputTokens: 200, responseOutputTokens: 300, inputTokens: 10000 },
+                chatStartMetadata: { contextWindowMetadata: { maxContextTokens: 1000000 } },
+              },
+            },
+          ],
+        }),
+      };
+    }
+    return {
+      ok: true,
+      json: async () => ({
+        response: { models: { 'claude-opus-5-5-high': { displayName: 'Claude Opus 5.5 (High)', maxTokens: 1000000, model: 'MODEL_PLACEHOLDER_M402' } } },
+      }),
+    };
+  };
+
+  const enriched = await enrichUsageWithTelemetry(
+    { conversationId: '11111111-2222-3333-4444-555555555555', modelName: 'Claude Opus 5.5 (High)', outputTokens: 500 },
+    { fetchImpl: fakeFetch, env: { ANTIGRAVITY_LS_ADDRESS: '127.0.0.1:9999', ANTIGRAVITY_CSRF_TOKEN: 'tok' } }
+  );
+  assert.equal(enriched.detectedContextLimit, 1000000);
+  assert.equal(enriched.speed.source, 'ls');
+  assert.equal(enriched.speed.streamingTps, 100);
+  assert.equal(enriched.speed.thinkingTokens, 200);
+
+  // 离线无环境变量时降级为 transcript 估算且绝不抛错
+  const fallback = await enrichUsageWithTelemetry(
+    { conversationId: '11111111-2222-3333-4444-555555555555', outputTokens: 400, latestThinkingTokens: 150, latestResponseTokens: 250 },
+    { env: {} }
+  );
+  assert.equal(fallback.speed.source, 'transcript');
+  assert.equal(fallback.speed.thinkingTokens, 150);
+  assert.equal(fallback.speed.responseTokens, 250);
+});
+
+test('usage-history: 多周期历史账本、桌面/CLI 统计、84 天热力图与预估 API 费用', async () => {
+  assert.equal(resolvePricingModelKey('Gemini 4 Neon (XHigh)'), 'gemini-4-neon');
+  assert.equal(resolvePricingModelKey('claude-opus-5-5-high'), 'claude-opus-5-5');
+
+  const cost = estimateTokenCost({
+    modelName: 'Gemini 4 Neon (High)',
+    inputTokens: 100000,
+    cacheReadTokens: 1000000,
+    outputTokens: 10000,
+  });
+  assert.equal(cost.priced, true);
+  assert.equal(Number(cost.costUsd.toFixed(2)), 0.6); // 0.3 + 0.15 + 0.15
+  assert.ok(cost.cacheSavedUsd > 2.8);
+
+  await withTempDir((tempDir) => {
+    const desktopBrain = path.join(tempDir, '.gemini', 'antigravity', 'brain');
+    const cliBrain = path.join(tempDir, '.gemini', 'antigravity-cli', 'brain');
+    const cacheDir = path.join(tempDir, 'cache');
+
+    const nowMs = new Date('2026-11-27T12:00:00Z').getTime();
+    const d1Dir = path.join(desktopBrain, 'sess-desktop-1', '.system_generated', 'logs');
+    const c1Dir = path.join(cliBrain, 'sess-cli-1', '.system_generated', 'logs');
+    fs.mkdirSync(d1Dir, { recursive: true });
+    fs.mkdirSync(c1Dir, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(d1Dir, 'transcript.jsonl'),
+      [
+        JSON.stringify({
+          type: 'PLANNER_RESPONSE',
+          model: 'gemini-4-neon-xhigh',
+          input_tokens: 50000,
+          cache_read_tokens: 450000,
+          output_tokens: 2000,
+          created_at: '2026-11-27T08:00:00Z',
+        }),
+        JSON.stringify({
+          type: 'PLANNER_RESPONSE',
+          model: 'claude-opus-5-5-high',
+          input_tokens: 10000,
+          cache_read_tokens: 90000,
+          output_tokens: 1000,
+          created_at: '2026-11-20T08:00:00Z',
+        }),
+      ].join('\n') + '\n',
+      'utf8'
+    );
+
+    fs.writeFileSync(
+      path.join(c1Dir, 'transcript.jsonl'),
+      JSON.stringify({
+        type: 'PLANNER_RESPONSE',
+        model: 'gemini-4-neon-high',
+        input_tokens: 20000,
+        cache_read_tokens: 80000,
+        output_tokens: 500,
+        created_at: '2026-11-27T09:00:00Z',
+      }) + '\n',
+      'utf8'
+    );
+
+    const todayRep = getUsageHistoryReport({
+      period: 'today',
+      brainDirs: [desktopBrain, cliBrain],
+      cacheDir,
+      nowMs,
+    });
+    assert.equal(todayRep.summary.sessionCount, 2);
+    assert.equal(todayRep.summary.desktopCalls, 1);
+    assert.equal(todayRep.summary.cliCalls, 1);
+    assert.equal(todayRep.summary.totalTokens, 602500);
+    assert.ok(todayRep.summary.estimatedCostUsd > 0);
+    assert.equal(todayRep.heatmap.days.length, 84);
+    assert.equal(todayRep.heatmap.activeDays, 2);
+
+    const rep30d = getUsageHistoryReport({
+      period: '30d',
+      brainDirs: [desktopBrain, cliBrain],
+      cacheDir,
+      nowMs,
+    });
+    assert.equal(rep30d.summary.callCount, 3);
+    assert.equal(rep30d.models.length, 2);
+    assert.equal(rep30d.models[0].modelKey, 'gemini-4-neon');
+    assert.ok(fs.existsSync(path.join(cacheDir, 'usage-history-cache.json')));
+  });
+});
+
+test('rehydrate: 压缩后防失忆 Hook 提取、脱敏、敏感文件拦截、防重复注入与 hooks.json 安全管理', async () => {
+  const redacted = redactSecrets('Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc12345 and sk-proj-1234567890abcdefghij');
+  assert.equal(redacted.includes('eyJhbGci'), false);
+  assert.equal(redacted.includes('sk-proj-'), false);
+
+  const fenced = truncateUtf8WithFences('```js\nconst a = 1;\nconst b = 2;\n', 22);
+  assert.ok(fenced.endsWith('\n```'));
+
+  await withTempDir((tempDir) => {
+    // 1. 测试 hooks.json 启停、外部冲突检测与无痕卸载
+    const configDir = path.join(tempDir, '.gemini', 'config');
+    fs.mkdirSync(configDir, { recursive: true });
+    const hooksPath = path.join(configDir, 'hooks.json');
+    fs.writeFileSync(
+      hooksPath,
+      JSON.stringify({ 'other-hook': { SessionStart: [{ type: 'command', command: 'echo ok' }] } }),
+      'utf8'
+    );
+
+    const status0 = getRehydrateStatus({ homeDir: tempDir });
+    assert.equal(status0.enabled, false);
+
+    const enRes = setRehydrateEnabled(true, { homeDir: tempDir });
+    assert.equal(enRes.ok, true);
+    assert.equal(enRes.status.enabled, true);
+
+    const savedHooks = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
+    assert.ok(savedHooks['other-hook'], '不得破坏已有其他 Hook');
+    assert.ok(savedHooks[REHYDRATE_HOOK_NAME]?.PreInvocation?.length === 1);
+
+    // 模拟外部已安装同类 Hook 冲突探测
+    savedHooks['post-compact-rehydrate'] = { enabled: true, PreInvocation: [{ type: 'command', command: 'python x.py' }] };
+    fs.writeFileSync(hooksPath, JSON.stringify(savedHooks), 'utf8');
+    assert.equal(getRehydrateStatus({ homeDir: tempDir }).externalConflict, true);
+
+    const rmRes = removeRehydrateHook({ homeDir: tempDir });
+    assert.equal(rmRes.ok, true);
+    assert.equal(rmRes.status.enabled, false);
+    const afterRm = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
+    assert.equal(afterRm[REHYDRATE_HOOK_NAME], undefined);
+    assert.ok(afterRm['other-hook']);
+
+    // 2. 测试 Hook 运行逻辑：压缩点检测、白名单文件快照、敏感文件拦截与去重
+    const wsDir = path.join(tempDir, 'ws');
+    const logsDir = path.join(tempDir, 'brain', 'cid-rehydrate-1', '.system_generated', 'logs');
+    fs.mkdirSync(wsDir, { recursive: true });
+    fs.mkdirSync(logsDir, { recursive: true });
+
+    const safeFile = path.join(wsDir, 'app.js');
+    const secretFile = path.join(wsDir, '.env');
+    fs.writeFileSync(safeFile, 'export const token = "sk-live-secret1234567890abcdef";\nconsole.log("ok");\n', 'utf8');
+    fs.writeFileSync(secretFile, 'DB_PASS=super_secret_password\n', 'utf8');
+
+    const transcriptPath = path.join(logsDir, 'transcript.jsonl');
+    const lines = [
+      JSON.stringify({ step_index: 1, type: 'USER_INPUT', content: '<USER_REQUEST>帮我重构支付模块</USER_REQUEST>' }),
+      JSON.stringify({
+        step_index: 2,
+        type: 'PLANNER_RESPONSE',
+        content: '已修改 app.js 并检查配置',
+        tool_calls: [
+          { name: 'edit_file', arguments: { Path: safeFile }, result: 'ok' },
+          { name: 'read_file', arguments: { Path: secretFile }, result: 'ok' },
+        ],
+      }),
+      JSON.stringify({ step_index: 3, type: 'CHECKPOINT', created_at: '2026-11-27T10:00:00Z' }),
+    ];
+    fs.writeFileSync(transcriptPath, lines.join('\n') + '\n', 'utf8');
+
+    const firstOut = runRehydratePayload({
+      transcriptPath,
+      conversationId: 'cid-rehydrate-1',
+      workspacePaths: [wsDir],
+    });
+    assert.ok(Array.isArray(firstOut.injectSteps) && firstOut.injectSteps.length === 1);
+    const injectedMsg = firstOut.injectSteps[0].systemMessage.systemMessage;
+    assert.ok(injectedMsg.includes('帮我重构支付模块'));
+    assert.ok(injectedMsg.includes('app.js'));
+    assert.equal(injectedMsg.includes('sk-live-secret'), false, '恢复文件中的密钥必须自动脱敏');
+    assert.equal(injectedMsg.includes('super_secret_password'), false, '敏感 .env 文件必须被拦截');
+
+    // 第二次重复调用同一压缩点必须直接返回 {} 不重复注入
+    const secondOut = runRehydratePayload({
+      transcriptPath,
+      conversationId: 'cid-rehydrate-1',
+      workspacePaths: [wsDir],
+    });
+    assert.deepEqual(secondOut, {});
+  });
 });

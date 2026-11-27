@@ -1,7 +1,7 @@
 {
   "name": "context-ring",
-  "version": "1.0.0",
-  "description": "面向 Google Antigravity 2.0 的零侵入上下文监控插件：支持细环、甜甜圈、毛毛虫、玻璃水瓶与液态胶囊多形态切换，兼容 Windows / macOS / Linux / WSL2。",
+  "version": "1.1.0",
+  "description": "面向 Google Antigravity 2.0 的零侵入上下文与用量监控插件：支持玻璃水瓶、盘圈毛毛虫、极简细环 3 种形态，内置实时生成速度体检、按模型上下文上限记忆、历史热力图与预估 API 费用，以及纯 Node.js 压缩后防失忆 Hook。",
   "type": "module",
   "license": "MIT",
   "repository": {
