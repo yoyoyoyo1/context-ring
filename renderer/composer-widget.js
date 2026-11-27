@@ -96,7 +96,26 @@
   let popoverPinned = false;
   let hidePopoverTimer = null;
   let lastPopoverFingerprint = '';
+  let lastModalSvgSig = '';
+  let lastModalTrendSig = '';
+  let previewRafId = 0;
   let settingsPreviewPct = null;
+
+  /**
+   * 比较两份设置对象是否完全一致（避免同值广播触发冗余重绘）
+   */
+  function isSameSettings(a, b) {
+    if (!a || !b) return false;
+    return (
+      a.enabled === b.enabled &&
+      a.styleMode === b.styleMode &&
+      a.palette === b.palette &&
+      Number(a.contextLimit) === Number(b.contextLimit) &&
+      a.showPercentText === b.showPercentText &&
+      a.animateEffects === b.animateEffects &&
+      a.placement === b.placement
+    );
+  }
 
   /**
    * 接收来自 Node 侧 CDP 宿主的 RPC 响应
@@ -114,7 +133,9 @@
    */
   window.__contextRingReceiveSettings = function receiveSettings(nextSettings) {
     if (!nextSettings || typeof nextSettings !== 'object') return;
-    currentSettings = Object.assign({}, currentSettings, nextSettings);
+    const merged = Object.assign({}, currentSettings, nextSettings);
+    if (isSameSettings(currentSettings, merged)) return;
+    currentSettings = merged;
     lastPopoverFingerprint = '';
     syncAllComposerFooters(false);
     if (activeFooterEl) {
@@ -155,7 +176,9 @@
    * 统一更新本地设置并异步持久化到 settings.json
    */
   function applySettingPatch(patch) {
-    currentSettings = Object.assign({}, currentSettings, patch);
+    const merged = Object.assign({}, currentSettings, patch);
+    if (isSameSettings(currentSettings, merged)) return;
+    currentSettings = merged;
     lastPopoverFingerprint = '';
     syncAllComposerFooters(false);
     if (activeFooterEl) {
@@ -351,10 +374,10 @@
         padding: 12px 13px;
         border-radius: 15px;
         border: 1px solid rgba(148, 163, 184, 0.24);
-        background: rgba(255, 255, 255, 0.97);
+        background: #ffffff;
         color: #0f172a;
         box-shadow: 0 14px 34px rgba(15, 23, 42, 0.14), 0 3px 10px rgba(15, 23, 42, 0.06);
-        backdrop-filter: blur(16px);
+        contain: layout style paint;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
         font-size: 12px;
         opacity: 0;
@@ -628,7 +651,7 @@
         background: rgba(148, 163, 184, 0.16);
       }
 
-      /* 独立样式与监控设置页面（全屏原生风格视图） */
+      /* 独立样式与监控设置页面（无全屏模糊，确保 60fps 流畅切换） */
       #${SETTINGS_MODAL_ID} {
         position: fixed;
         inset: 0;
@@ -637,9 +660,14 @@
         align-items: center;
         justify-content: center;
         padding: 24px;
-        background: rgba(15, 23, 42, 0.36);
-        backdrop-filter: blur(8px);
+        background: rgba(15, 23, 42, 0.42);
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      #${SETTINGS_MODAL_ID}.is-dark {
+        background: rgba(0, 0, 0, 0.56);
+      }
+      #${SETTINGS_MODAL_ID}:not(.is-open) * {
+        animation: none !important;
       }
       #${SETTINGS_MODAL_ID}.is-open {
         display: flex;
@@ -654,6 +682,7 @@
         color: #0f172a;
         box-shadow: 0 24px 64px rgba(15, 23, 42, 0.24);
         padding: 20px 22px 22px;
+        contain: layout style paint;
       }
       #${SETTINGS_MODAL_ID}.is-dark .cr-page-shell {
         border-color: rgba(148, 163, 184, 0.18);
@@ -785,6 +814,7 @@
         display: flex;
         align-items: center;
         justify-content: center;
+        contain: layout style paint;
       }
       .cr-shape-name {
         font-size: 12.5px;
@@ -1579,7 +1609,16 @@
               <button type="button" class="cr-page-pill" data-role="preview-reset-btn" style="padding:2px 8px;font-size:10.5px;">实时</button>
             </div>
           </div>
-          <div class="cr-shape-grid" data-role="shape-grid"></div>
+          <div class="cr-shape-grid" data-role="shape-grid">
+            ${STYLE_OPTIONS.map(
+              (opt) => `
+              <button type="button" class="cr-shape-card" data-style="${opt.id}">
+                <div class="cr-shape-preview" data-preview-style="${opt.id}"></div>
+                <div class="cr-shape-name">${opt.label}</div>
+                <div class="cr-shape-desc">${opt.desc}</div>
+              </button>`
+            ).join('')}
+          </div>
         </div>
 
         <div class="cr-page-sec">
@@ -1645,10 +1684,14 @@
       if (nextStyle) applySettingPatch({ styleMode: nextStyle });
     });
 
-    // 预览水位滑块（仅用于设置页预览测试，不影响真实统计）
+    // 预览水位滑块（经 rAF 合帧限频，避免拖动高频重建 SVG）
     modal.querySelector('[data-role="preview-range"]').addEventListener('input', (e) => {
       settingsPreviewPct = Number(e.target.value);
-      renderSettingsPageContent();
+      if (previewRafId) return;
+      previewRafId = requestAnimationFrame(() => {
+        previewRafId = 0;
+        renderSettingsPageContent();
+      });
     });
     modal.querySelector('[data-role="preview-reset-btn"]').addEventListener('click', () => {
       settingsPreviewPct = null;
@@ -1705,17 +1748,28 @@
 
     const grid = modal.querySelector('[data-role="shape-grid"]');
     grid.classList.toggle('cr-anim-on', Boolean(currentSettings.animateEffects));
-    grid.innerHTML = STYLE_OPTIONS.map((opt) => {
-      const isActive = opt.id === currentSettings.styleMode;
-      const svg = buildShapeSvg(opt.id, previewPct, hitRate, colors, `modal-${opt.id}`, 44);
-      return `
-        <button type="button" class="cr-shape-card ${isActive ? 'is-active' : ''}" data-style="${opt.id}">
-          <div class="cr-shape-preview">${svg}</div>
-          <div class="cr-shape-name">${opt.label}</div>
-          <div class="cr-shape-desc">${opt.desc}</div>
-        </button>
-      `;
-    }).join('');
+
+    // 仅切换高亮状态 class，不销毁卡片 DOM；仅在水位/配色/深浅模式变化时增量更新 SVG
+    for (const card of grid.querySelectorAll('.cr-shape-card')) {
+      card.classList.toggle('is-active', card.getAttribute('data-style') === currentSettings.styleMode);
+    }
+
+    const svgSig = [
+      Math.round(previewPct),
+      Math.round(hitRate),
+      currentSettings.palette,
+      isDarkTheme() ? 1 : 0,
+    ].join('|');
+
+    if (svgSig !== lastModalSvgSig) {
+      lastModalSvgSig = svgSig;
+      for (const opt of STYLE_OPTIONS) {
+        const slot = grid.querySelector(`[data-preview-style="${opt.id}"]`);
+        if (slot) {
+          slot.innerHTML = buildShapeSvg(opt.id, previewPct, hitRate, colors, `modal-${opt.id}`, 44);
+        }
+      }
+    }
 
     for (const btn of modal.querySelectorAll('[data-palette]')) {
       btn.classList.toggle('is-active', btn.getAttribute('data-palette') === currentSettings.palette);
@@ -1740,16 +1794,21 @@
       `${formatCompactTokens(data.totalTokens || 0)} / ${formatCompactTokens(limit)} · 缓存命中 ${(data.cacheHitRate || 0).toFixed(1)}%`;
 
     const hist = Array.isArray(data.history) ? data.history : [];
-    const maxStep = Math.max(limit * 0.25, ...hist.map((x) => Number(x.totalTokens || 0)), 1);
-    modal.querySelector('[data-role="modal-trend-bars"]').innerHTML = hist.length
-      ? hist
-          .map((step) => {
-            const caH = Math.max(2, Math.round(((step.cacheReadTokens || 0) / maxStep) * 62));
-            const inH = Math.max(1, Math.round(((step.inputTokens || 0) / maxStep) * 62));
-            return `<div class="cr-trend-col" title="步 #${step.step}: ${formatCompactTokens(step.totalTokens)}"><div class="cr-trend-in" style="height:${inH}px"></div><div class="cr-trend-ca" style="height:${caH}px"></div></div>`;
-          })
-          .join('')
-      : '<div style="opacity:0.6;font-size:12px;margin:auto;">暂无历史步数记录</div>';
+    const lastHist = hist.length ? hist[hist.length - 1] : null;
+    const trendSig = `${limit}|${hist.length}|${lastHist?.step || 0}|${lastHist?.totalTokens || 0}`;
+    if (trendSig !== lastModalTrendSig) {
+      lastModalTrendSig = trendSig;
+      const maxStep = Math.max(limit * 0.25, ...hist.map((x) => Number(x.totalTokens || 0)), 1);
+      modal.querySelector('[data-role="modal-trend-bars"]').innerHTML = hist.length
+        ? hist
+            .map((step) => {
+              const caH = Math.max(2, Math.round(((step.cacheReadTokens || 0) / maxStep) * 62));
+              const inH = Math.max(1, Math.round(((step.inputTokens || 0) / maxStep) * 62));
+              return `<div class="cr-trend-col" title="步 #${step.step}: ${formatCompactTokens(step.totalTokens)}"><div class="cr-trend-in" style="height:${inH}px"></div><div class="cr-trend-ca" style="height:${caH}px"></div></div>`;
+            })
+            .join('')
+        : '<div style="opacity:0.6;font-size:12px;margin:auto;">暂无历史步数记录</div>';
+    }
   }
 
   /**
@@ -1984,8 +2043,21 @@
   document.addEventListener('keydown', onDocumentKeyDown);
 
   let domSyncTimer = null;
-  const domObserver = new MutationObserver(() => {
-    if (domSyncTimer) return;
+  const domObserver = new MutationObserver((records) => {
+    // 忽略本插件自身弹窗、卡片和按钮内部的 DOM 变动，避免连锁触发全页扫描
+    const hasExternalMutation = records.some((rec) => {
+      const target = rec.target;
+      if (!target || target.nodeType !== 1) return false;
+      if (
+        target.closest?.(`#${SETTINGS_MODAL_ID}`) ||
+        target.closest?.(`#${POPOVER_ID}`) ||
+        target.closest?.(`.${HOST_CLASS}`)
+      ) {
+        return false;
+      }
+      return true;
+    });
+    if (!hasExternalMutation || domSyncTimer) return;
     domSyncTimer = setTimeout(() => {
       domSyncTimer = null;
       void syncAllComposerFooters(false);
@@ -2009,6 +2081,7 @@
     clearInterval(pollInterval);
     if (domSyncTimer) clearTimeout(domSyncTimer);
     if (hidePopoverTimer) clearTimeout(hidePopoverTimer);
+    if (previewRafId) cancelAnimationFrame(previewRafId);
     domObserver.disconnect();
     document.removeEventListener('pointerdown', onDocumentPointerDown);
     document.removeEventListener('keydown', onDocumentKeyDown);
