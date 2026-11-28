@@ -92,6 +92,7 @@
 - **自动识别模型真实上限 + 按模型系列记忆**：默认开启 **`自动`** 模式（`contextLimit = 0`），自动读取宿主响应中的 `maxContextTokens` 与模型目录真实上限；当你在底部切换为 `256k / 512k / 1M` 时，会自动按当前模型系列（忽略思考深度后缀）分别记忆，点回 `自动` 即恢复官方上限。
 - **多周期历史用量看板 + 12 周热力图 + 预估 API 费用**：扫描本地桌面端与 CLI 会话日志，统计 **今日 / 近 7 天 / 近 30 天 / 全部** 的总 Token 消耗、全局缓存命中率、近 12 周 GitHub 风格活跃热力图与各模型占比，并按公开 Developer API 参考费率估算等价费用与缓存节省金额 *（注：仅供参考，不代表实际订阅扣费）*。
 - **纯 Node.js 压缩后防失忆（Post-Compact Rehydration）**：与悬浮卡片的一键 `/compact` 深度协同，内置零依赖 `PreInvocation` Hook（默认关闭，可在设置页、Sidecar 工坊或 CLI 一键启停）。当会话发生 `CHECKPOINT` 上下文压缩后，自动把用户需求时间线、近期进展摘要、活跃规范文档与工作区白名单文件安全脱敏并注入回上下文，显著缓解长对话压缩失忆；卸载时自动无痕清理 `hooks.json`。
+- **Planning 只读规划模式（按会话独立 + Hook 硬护栏）**：输入框底栏常驻 `Plan / Planning` 一键切换胶囊（同时在悬浮卡片、设置页、Sidecar 工坊与 CLI 同步，支持独立隐藏）。开启后仅对当前会话生效（空白新会话支持提前预挂起并自动晋升绑定），动态复用 Antigravity 原生 `/plan` 规范引导先产出带 **Proceed** 按钮的实施计划文档，并通过 `PreToolUse` 硬拦截工作区代码写入与修改型命令（仅放行只读调研与 Artifact 目录内的计划文档）；切回普通模式后立刻放行并在投递一次性退出通知后自动注销 Hook，平时编码零进程开销。
 - **空白新会话隔离**：新建空白对话时严格归零显示 `0%`，绝不误带入上一条会话的缓存上下文或速度数据。
 
 ---
@@ -143,8 +144,14 @@ node scripts/cli-stats.mjs --style bottle --limit auto
 # 按模型系列单独设定上下文上限（设回 auto 或 0 即恢复自动）
 node scripts/cli-stats.mjs --model-limit "gemini-4-neon=512000"
 
-# 独立开关输入框底栏外置的 W/H 额度双圆环与实时测速胶囊
-node scripts/cli-stats.mjs --footer-quota on --footer-speed on
+# 独立开关输入框底栏外置的 W/H 额度双圆环、实时测速胶囊与 Planning 切换胶囊
+node scripts/cli-stats.mjs --footer-quota on --footer-speed on --footer-planning on
+
+# 按会话独立启停、查询或清空 Planning 只读规划模式（支持传入 conversationId 或 new）
+node scripts/cli-stats.mjs --plan on
+node scripts/cli-stats.mjs --plan off
+node scripts/cli-stats.mjs --plan status
+node scripts/cli-stats.mjs --plan clear
 
 # 一键启停或查询纯 Node.js 压缩后防失忆 Hook
 node scripts/cli-stats.mjs --rehydrate on

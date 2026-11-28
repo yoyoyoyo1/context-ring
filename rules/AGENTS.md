@@ -21,7 +21,11 @@ description: 当用户询问上下文占用、生成速度、历史用量热力�
    ```bash
    node "$HOME/.gemini/config/plugins/context-ring/scripts/cli-stats.mjs" --rehydrate status
    ```
-5. 引导用户打开右侧实时监控与样式定制工坊时，提供以下 Sidecar 胶囊链接：
+5. 按会话独立开关 Planning 只读规划模式（`on` / `off` / `status` / `clear`，支持 `--footer-planning on|off` 控制底栏胶囊显示）：
+   ```bash
+   node "$HOME/.gemini/config/plugins/context-ring/scripts/cli-stats.mjs" --plan status
+   ```
+6. 引导用户打开右侧实时监控与样式定制工坊时，提供以下 Sidecar 胶囊链接：
    ```markdown
    [Context Ring (上下文工坊)](sidecar://context-ring/monitor/ui.html)
    ```

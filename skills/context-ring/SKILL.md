@@ -34,5 +34,12 @@ Context Ring 通过客户端本地 CDP 接口（`--remote-debugging-port=0`）�
    node "$HOME/.gemini/config/plugins/context-ring/scripts/cli-stats.mjs" --rehydrate on
    node "$HOME/.gemini/config/plugins/context-ring/scripts/cli-stats.mjs" --rehydrate off
    ```
-6. **打开右侧可视化监控与样式工坊**：
+6. **按会话独立控制 Planning 只读规划模式与底栏显示**：
+   ```bash
+   node "$HOME/.gemini/config/plugins/context-ring/scripts/cli-stats.mjs" --plan on [conversationId]
+   node "$HOME/.gemini/config/plugins/context-ring/scripts/cli-stats.mjs" --plan off [conversationId]
+   node "$HOME/.gemini/config/plugins/context-ring/scripts/cli-stats.mjs" --plan status
+   node "$HOME/.gemini/config/plugins/context-ring/scripts/cli-stats.mjs" --footer-planning on
+   ```
+7. **打开右侧可视化监控与样式工坊**：
    在回复中输出胶囊链接：`[Context Ring (上下文工坊)](sidecar://context-ring/monitor/ui.html)`

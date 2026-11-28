@@ -41,6 +41,7 @@
   const HOST_CLASS = 'agy-context-ring-host';
   const QUOTA_HOST_CLASS = 'agy-context-ring-quota-host';
   const SPEED_HOST_CLASS = 'agy-context-ring-speed-host';
+  const PLANNING_HOST_CLASS = 'agy-context-ring-planning-host';
 
   const STYLE_OPTIONS = [
     { id: 'bottle', label: '玻璃瓶装水', desc: '双层波浪液面与上升气泡' },
@@ -96,6 +97,7 @@
       showPercentText: true,
       showFooterQuota: true,
       showFooterSpeed: true,
+      showFooterPlanning: true,
       animateEffects: true,
       placement: 'right',
     },
@@ -113,6 +115,28 @@
     externalHookName: '',
     error: '',
   };
+  let planningStatus = Object.assign(
+    {
+      hookRegistered: false,
+      hookMode: 'off',
+      activeSessionIds: [],
+      activeCount: 0,
+      pendingNewSession: false,
+      pendingArmedAt: 0,
+      exitNoticeCount: 0,
+      hasNativePlanPrompt: false,
+      error: '',
+    },
+    window.__CONTEXT_RING_BOOT_PLANNING__ && typeof window.__CONTEXT_RING_BOOT_PLANNING__ === 'object'
+      ? window.__CONTEXT_RING_BOOT_PLANNING__
+      : {}
+  );
+  if (!Array.isArray(planningStatus.activeSessionIds)) {
+    planningStatus.activeSessionIds = [];
+  }
+  let planningToggleInFlight = false;
+  let planningBootFetched = Boolean(window.__CONTEXT_RING_BOOT_PLANNING__);
+  let nativePlanPromptSynced = Boolean(planningStatus.hasNativePlanPrompt);
   let activeSettingsTab = 'appearance';
   let historyPeriod = '30d';
   let historyReport = null;
@@ -135,6 +159,9 @@
   let lastModalTrendSig = '';
   let previewRafId = 0;
   let settingsPreviewPct = null;
+  let selectedStepNumber = null;
+  let selectedStepCid = '';
+  let stepMenuMode = 'turns';
 
   /**
    * 计算当前模型实际生效的上下文上限（优先级：按模型自定义 > 全局手动 > 宿主真实探测 > 模型目录 > 512k）
@@ -177,6 +204,7 @@
       a.showPercentText === b.showPercentText &&
       (a.showFooterQuota !== false) === (b.showFooterQuota !== false) &&
       (a.showFooterSpeed !== false) === (b.showFooterSpeed !== false) &&
+      (a.showFooterPlanning !== false) === (b.showFooterPlanning !== false) &&
       a.animateEffects === b.animateEffects &&
       a.placement === b.placement
     );
@@ -224,6 +252,26 @@
     if (!nextStatus || typeof nextStatus !== 'object') return;
     rehydrateStatus = Object.assign({}, rehydrateStatus, nextStatus);
     lastPopoverFingerprint = '';
+    if (activeFooterEl) {
+      renderPopoverData(activeFooterEl, true);
+    }
+    if (isSettingsModalOpen()) {
+      renderSettingsPageContent();
+    }
+  };
+
+  /**
+   * 接收来自宿主的 Planning 模式最新状态广播
+   */
+  window.__contextRingReceivePlanning = function receivePlanning(nextStatus) {
+    if (!nextStatus || typeof nextStatus !== 'object') return;
+    planningStatus = Object.assign({}, planningStatus, nextStatus, {
+      activeSessionIds: Array.isArray(nextStatus.activeSessionIds) ? nextStatus.activeSessionIds.slice() : [],
+    });
+    planningBootFetched = true;
+    if (planningStatus.hasNativePlanPrompt) nativePlanPromptSynced = true;
+    lastPopoverFingerprint = '';
+    refreshAllFooterPlanningBadges();
     if (activeFooterEl) {
       renderPopoverData(activeFooterEl, true);
     }
@@ -429,6 +477,169 @@
         display: block;
         flex-shrink: 0;
       }
+      .${PLANNING_HOST_CLASS} {
+        display: inline-flex;
+        align-items: center;
+        flex-shrink: 0;
+        margin-left: 3px;
+        user-select: none;
+      }
+      .cr-plan-pill-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        height: 23px;
+        padding: 0 7px;
+        border-radius: 9999px;
+        border: 1px solid transparent;
+        background: transparent;
+        color: var(--secondary-foreground, #64748b);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+        font-size: 11px;
+        font-weight: 600;
+        line-height: 1;
+        letter-spacing: -0.01em;
+        cursor: pointer;
+        outline: none;
+        transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+      }
+      .cr-plan-pill-btn:hover {
+        background: var(--secondary, rgba(148, 163, 184, 0.14));
+        color: var(--foreground, #0f172a);
+      }
+      .dark .cr-plan-pill-btn:hover {
+        color: #f1f5f9;
+      }
+      .cr-plan-pill-btn[data-active="1"] {
+        background: rgba(99, 102, 241, 0.12);
+        border-color: rgba(99, 102, 241, 0.34);
+        color: #4f46e5;
+      }
+      .cr-plan-pill-btn[data-active="1"]:hover {
+        background: rgba(99, 102, 241, 0.18);
+        border-color: rgba(99, 102, 241, 0.48);
+        color: #4338ca;
+      }
+      .dark .cr-plan-pill-btn[data-active="1"] {
+        background: rgba(129, 140, 248, 0.18);
+        border-color: rgba(129, 140, 248, 0.42);
+        color: #a5b4fc;
+      }
+      .dark .cr-plan-pill-btn[data-active="1"]:hover {
+        background: rgba(129, 140, 248, 0.25);
+        border-color: rgba(129, 140, 248, 0.56);
+        color: #c7d2fe;
+      }
+      .cr-plan-pill-btn[data-pending="1"] {
+        border-style: dashed;
+      }
+      .cr-plan-pill-btn:disabled {
+        opacity: 0.6;
+        cursor: wait;
+      }
+      .cr-plan-pill-dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 9999px;
+        background: currentColor;
+        display: none;
+        flex-shrink: 0;
+        box-shadow: 0 0 6px currentColor;
+      }
+      .cr-plan-pill-btn[data-active="1"] .cr-plan-pill-dot {
+        display: inline-block;
+      }
+      .cr-plan-pill-btn svg {
+        display: block;
+        flex-shrink: 0;
+      }
+      .cr-plan-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 6px 9px;
+        margin-bottom: 10px;
+        border-radius: 9px;
+        border: 1px solid rgba(15, 23, 42, 0.08);
+        background: rgba(15, 23, 42, 0.025);
+        transition: border-color 0.16s ease, background-color 0.16s ease;
+      }
+      #${POPOVER_ID}.is-dark .cr-plan-bar {
+        border-color: rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.035);
+      }
+      .cr-plan-bar.is-on {
+        border-color: rgba(99, 102, 241, 0.34);
+        background: rgba(99, 102, 241, 0.08);
+      }
+      #${POPOVER_ID}.is-dark .cr-plan-bar.is-on {
+        border-color: rgba(129, 140, 248, 0.36);
+        background: rgba(129, 140, 248, 0.12);
+      }
+      .cr-plan-bar-left {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--foreground, #0f172a);
+      }
+      #${POPOVER_ID}.is-dark .cr-plan-bar-left {
+        color: #f1f5f9;
+      }
+      .cr-plan-bar-sub {
+        font-size: 10px;
+        font-weight: 500;
+        color: var(--muted-foreground, #64748b);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .cr-plan-bar.is-on .cr-plan-bar-sub {
+        color: #4f46e5;
+      }
+      #${POPOVER_ID}.is-dark .cr-plan-bar.is-on .cr-plan-bar-sub {
+        color: #a5b4fc;
+      }
+      .cr-plan-pop-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        flex-shrink: 0;
+        border: 1px solid rgba(99, 102, 241, 0.28);
+        background: rgba(99, 102, 241, 0.08);
+        color: #4f46e5;
+        font-size: 10.5px;
+        font-weight: 600;
+        padding: 3.5px 8px;
+        border-radius: 7px;
+        cursor: pointer;
+        transition: background-color 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+      }
+      #${POPOVER_ID}.is-dark .cr-plan-pop-btn {
+        border-color: rgba(129, 140, 248, 0.34);
+        background: rgba(129, 140, 248, 0.14);
+        color: #c7d2fe;
+      }
+      .cr-plan-pop-btn.is-on {
+        background: #4f46e5;
+        border-color: #4f46e5;
+        color: #ffffff;
+      }
+      #${POPOVER_ID}.is-dark .cr-plan-pop-btn.is-on {
+        background: #6366f1;
+        border-color: #6366f1;
+        color: #ffffff;
+      }
+      .cr-plan-pop-btn:hover:not(:disabled) {
+        filter: brightness(1.06);
+      }
+      .cr-plan-pop-btn:disabled {
+        opacity: 0.65;
+        cursor: wait;
+      }
       .cr-trigger-btn {
         display: inline-flex;
         align-items: center;
@@ -572,15 +783,321 @@
         gap: 5px;
         flex-shrink: 0;
       }
+      .cr-step-picker {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+      }
       .cr-pop-steps-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        border: 1px solid transparent;
+        font-family: inherit;
         font-size: 10.5px;
+        font-weight: 500;
         color: var(--muted-foreground, #71717a);
         padding: 2px 6px;
         border-radius: 999px;
         background: var(--muted, rgba(10, 10, 12, 0.04));
+        cursor: pointer;
+        outline: none;
+        transition: background-color 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+      }
+      .cr-pop-steps-tag:hover:not(:disabled) {
+        background: var(--secondary, rgba(10, 10, 12, 0.08));
+        color: var(--foreground, #0a0a0c);
+      }
+      .cr-pop-steps-tag:disabled {
+        cursor: default;
+        opacity: 0.72;
       }
       #${POPOVER_ID}.is-dark .cr-pop-steps-tag {
         background: rgba(255, 255, 255, 0.06);
+        color: #a1a1aa;
+      }
+      #${POPOVER_ID}.is-dark .cr-pop-steps-tag:hover:not(:disabled) {
+        background: rgba(255, 255, 255, 0.11);
+        color: #f4f4f5;
+      }
+      .cr-pop-steps-tag.is-replaying {
+        background: rgba(99, 102, 241, 0.12);
+        border-color: rgba(99, 102, 241, 0.32);
+        color: #4f46e5;
+        font-weight: 650;
+      }
+      #${POPOVER_ID}.is-dark .cr-pop-steps-tag.is-replaying {
+        background: rgba(129, 140, 248, 0.18);
+        border-color: rgba(129, 140, 248, 0.38);
+        color: #a5b4fc;
+      }
+      .cr-step-caret {
+        width: 10px;
+        height: 10px;
+        opacity: 0.7;
+        flex-shrink: 0;
+        transition: transform 0.14s ease;
+      }
+      .cr-pop-steps-tag[aria-expanded="true"] .cr-step-caret {
+        transform: rotate(180deg);
+      }
+      .cr-step-menu {
+        position: absolute;
+        right: 0;
+        top: calc(100% + 6px);
+        z-index: 35;
+        width: 268px;
+        max-height: 256px;
+        overflow-y: auto;
+        padding: 4px;
+        border-radius: 12px;
+        background: var(--card, #ffffff);
+        color: var(--foreground, #0a0a0c);
+        box-shadow: 0 0 0 1px rgba(10, 10, 12, 0.09), 0 12px 26px -4px rgba(10, 10, 12, 0.16), 0 2px 6px rgba(10, 10, 12, 0.06);
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(-4px) scale(0.985);
+        transition: opacity 0.12s ease, transform 0.14s cubic-bezier(0.16, 1, 0.3, 1);
+        scrollbar-width: thin;
+      }
+      .cr-step-menu.is-open {
+        opacity: 1;
+        pointer-events: auto;
+        transform: translateY(0) scale(1);
+      }
+      #${POPOVER_ID}.is-dark .cr-step-menu {
+        background: var(--card, #1d2028);
+        color: #f4f4f5;
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.11), 0 16px 34px rgba(0, 0, 0, 0.56);
+      }
+      .cr-step-menu::-webkit-scrollbar {
+        width: 5px;
+      }
+      .cr-step-menu::-webkit-scrollbar-thumb {
+        border-radius: 999px;
+        background: rgba(113, 113, 122, 0.28);
+      }
+      .cr-step-option {
+        width: 100%;
+        border: none;
+        border-radius: 8px;
+        background: transparent;
+        color: inherit;
+        font-family: inherit;
+        font-size: 11px;
+        font-weight: 500;
+        padding: 5.5px 8px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        text-align: left;
+        cursor: pointer;
+        transition: background-color 0.12s ease, color 0.12s ease;
+      }
+      .cr-step-option:hover {
+        background: var(--muted, rgba(10, 10, 12, 0.055));
+      }
+      #${POPOVER_ID}.is-dark .cr-step-option:hover {
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .cr-step-option.is-active {
+        background: rgba(99, 102, 241, 0.11);
+        color: #4f46e5;
+        font-weight: 650;
+      }
+      #${POPOVER_ID}.is-dark .cr-step-option.is-active {
+        background: rgba(129, 140, 248, 0.16);
+        color: #a5b4fc;
+      }
+      .cr-step-opt-left {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        min-width: 0;
+        flex: 1;
+      }
+      .cr-step-opt-id {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 10.5px;
+        font-weight: 700;
+        flex-shrink: 0;
+      }
+      .cr-step-opt-prompt {
+        font-size: 10px;
+        color: var(--muted-foreground, #71717a);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+      }
+      .cr-step-opt-right {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        flex-shrink: 0;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 10.5px;
+      }
+      .cr-step-delta {
+        font-size: 9.5px;
+        font-weight: 650;
+        padding: 1px 4px;
+        border-radius: 4px;
+        color: var(--muted-foreground, #71717a);
+        background: rgba(113, 113, 122, 0.1);
+      }
+      .cr-step-delta.is-spike {
+        color: #d97706;
+        background: rgba(245, 158, 11, 0.14);
+      }
+      #${POPOVER_ID}.is-dark .cr-step-delta.is-spike {
+        color: #fbbf24;
+        background: rgba(245, 158, 11, 0.18);
+      }
+      .cr-step-delta.is-drop {
+        color: #059669;
+        background: rgba(16, 185, 129, 0.14);
+      }
+      #${POPOVER_ID}.is-dark .cr-step-delta.is-drop {
+        color: #34d399;
+        background: rgba(16, 185, 129, 0.18);
+      }
+      .cr-step-live-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 999px;
+        background: #10b981;
+        flex-shrink: 0;
+      }
+      .cr-step-replay-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 6px;
+        padding: 5px 8px;
+        margin-bottom: 10px;
+        border-radius: 9px;
+        border: 1px solid rgba(99, 102, 241, 0.26);
+        background: rgba(99, 102, 241, 0.08);
+        font-size: 10.5px;
+        line-height: 1.25;
+      }
+      #${POPOVER_ID}.is-dark .cr-step-replay-bar {
+        border-color: rgba(129, 140, 248, 0.3);
+        background: rgba(129, 140, 248, 0.12);
+      }
+      .cr-step-replay-bar.is-hidden {
+        display: none;
+      }
+      .cr-step-replay-info {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        min-width: 0;
+        font-weight: 600;
+        color: #4f46e5;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #${POPOVER_ID}.is-dark .cr-step-replay-info {
+        color: #c7d2fe;
+      }
+      .cr-step-replay-actions {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        flex-shrink: 0;
+      }
+      .cr-step-nav-btn {
+        border: 1px solid rgba(99, 102, 241, 0.28);
+        background: rgba(255, 255, 255, 0.72);
+        color: #4f46e5;
+        font-family: inherit;
+        font-size: 10px;
+        font-weight: 650;
+        padding: 2px 5.5px;
+        border-radius: 6px;
+        cursor: pointer;
+        line-height: 1.2;
+      }
+      #${POPOVER_ID}.is-dark .cr-step-nav-btn {
+        background: rgba(30, 34, 46, 0.72);
+        border-color: rgba(129, 140, 248, 0.34);
+        color: #c7d2fe;
+      }
+      .cr-step-nav-btn:hover:not(:disabled) {
+        background: #4f46e5;
+        border-color: #4f46e5;
+        color: #ffffff;
+      }
+      .cr-step-nav-btn:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+      .cr-step-fork-btn {
+        border-color: rgba(16, 185, 129, 0.36);
+        background: rgba(16, 185, 129, 0.11);
+        color: #059669;
+      }
+      #${POPOVER_ID}.is-dark .cr-step-fork-btn {
+        border-color: rgba(52, 211, 153, 0.4);
+        background: rgba(16, 185, 129, 0.16);
+        color: #6ee7b7;
+      }
+      .cr-step-fork-btn:hover:not(:disabled) {
+        background: #059669;
+        border-color: #059669;
+        color: #ffffff;
+      }
+      .cr-step-fork-btn.is-err {
+        border-color: rgba(239, 68, 68, 0.42);
+        background: rgba(239, 68, 68, 0.12);
+        color: #dc2626;
+      }
+      #${POPOVER_ID}.is-dark .cr-step-fork-btn.is-err {
+        color: #fca5a5;
+      }
+      .cr-step-menu-tabs {
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        padding: 2px;
+        border-radius: 7px;
+        background: rgba(113, 113, 122, 0.12);
+      }
+      #${POPOVER_ID}.is-dark .cr-step-menu-tabs {
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .cr-step-tab-btn {
+        border: none;
+        border-radius: 5px;
+        background: transparent;
+        color: var(--muted-foreground, #71717a);
+        font-family: inherit;
+        font-size: 9.5px;
+        font-weight: 600;
+        padding: 2px 6px;
+        cursor: pointer;
+        transition: background-color 0.12s ease, color 0.12s ease;
+      }
+      .cr-step-tab-btn.is-active {
+        background: #ffffff;
+        color: var(--foreground, #0a0a0c);
+        box-shadow: 0 1px 2px rgba(10, 10, 12, 0.1);
+      }
+      #${POPOVER_ID}.is-dark .cr-step-tab-btn.is-active {
+        background: #2b303c;
+        color: #f4f4f5;
+      }
+      @keyframes crJumpHighlightPulse {
+        0% { box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.65), 0 0 18px rgba(99, 102, 241, 0.25); }
+        100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0), 0 0 0 rgba(99, 102, 241, 0); }
+      }
+      .cr-jump-highlight {
+        border-radius: 10px;
+        animation: crJumpHighlightPulse 1.3s ease-out;
       }
       .cr-open-settings-btn {
         width: 25px;
@@ -1911,6 +2428,91 @@
   }
 
   /**
+   * 在对象及其浅层属性中按谓词检索宿主服务实例（用于查找 Router、Fork 等原生控制器）
+   */
+  function inspectObjectForMatch(obj, depth, predicate) {
+    if (!obj || (typeof obj !== 'object' && typeof obj !== 'function') || depth > 2) {
+      return null;
+    }
+    if (obj === window || obj === document || obj.nodeType) {
+      return null;
+    }
+    if (predicate(obj)) return obj;
+    for (const key of Object.keys(obj)) {
+      let val;
+      try {
+        val = obj[key];
+      } catch {
+        continue;
+      }
+      if (!val || (typeof val !== 'object' && typeof val !== 'function')) continue;
+      if (predicate(val)) return val;
+      if (depth < 2) {
+        const nested = inspectObjectForMatch(val, depth + 1, predicate);
+        if (nested) return nested;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 从 React Fiber 树中检索宿主语言服务客户端与路由导航实例（零第三方插件依赖）
+   */
+  function getConversationForkTools(footerEl) {
+    const card = footerEl?.closest?.('.surface-composer-card');
+    const anchors = [
+      card?.querySelector?.('[data-testid="model-selector-trigger"]'),
+      card?.querySelector?.('[contenteditable="true"]'),
+      document.querySelector('[data-testid="model-selector-trigger"]'),
+      footerEl,
+      document.body,
+    ].filter(Boolean);
+
+    let lsClient = cachedLsClient || null;
+    let router = null;
+    const isLs = (v) => Boolean(v && typeof v.forkConversation === 'function');
+    const isRouter = (v) => Boolean(v && typeof v.navigate === 'function' && typeof v.buildRouteTree === 'function');
+
+    for (const anchor of anchors) {
+      const fiberKey = Object.keys(anchor).find(
+        (key) => key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$')
+      );
+      if (!fiberKey) continue;
+
+      let cursor = anchor[fiberKey];
+      let steps = 0;
+      while (cursor && steps < 65 && (!lsClient || !isLs(lsClient) || !router)) {
+        steps++;
+        const sources = [cursor.memoizedProps];
+        let ctx = cursor.dependencies?.firstContext;
+        let ctxSteps = 0;
+        while (ctx && ctxSteps < 32) {
+          sources.push(ctx.memoizedValue);
+          ctx = ctx.next;
+          ctxSteps++;
+        }
+        for (const src of sources) {
+          if (!lsClient || !isLs(lsClient)) {
+            const foundLs = inspectObjectForMatch(src, 0, isLs);
+            if (foundLs) {
+              lsClient = foundLs;
+              if (typeof foundLs.retrieveUserQuotaSummary === 'function') cachedLsClient = foundLs;
+            }
+          }
+          if (!router) {
+            const foundRouter = inspectObjectForMatch(src, 0, isRouter);
+            if (foundRouter) router = foundRouter;
+          }
+        }
+        cursor = cursor.return;
+      }
+      if (lsClient && isLs(lsClient) && router) break;
+    }
+
+    return { lsClient: isLs(lsClient) ? lsClient : null, router };
+  }
+
+  /**
    * 兼容解析 Protobuf Timestamp 对象与 ISO 字符串为毫秒时间戳
    */
   function parseQuotaResetTimeMs(resetTime) {
@@ -2356,6 +2958,158 @@
 
     const rect = anchorEl.getBoundingClientRect();
     const tipW = tip.offsetWidth || 190;
+    const tipH = tip.offsetHeight || 56;
+    let left = rect.left + rect.width / 2 - tipW / 2;
+    left = Math.max(8, Math.min(window.innerWidth - tipW - 8, left));
+    let top = rect.top - tipH - 7;
+    if (top < 8) top = rect.bottom + 7;
+    tip.style.left = `${Math.round(left)}px`;
+    tip.style.top = `${Math.round(top)}px`;
+  }
+
+  /**
+   * 判断指定会话 ID（或空白新会话）当前是否处于 Planning 模式
+   */
+  function isPlanningActiveForCid(cid) {
+    const clean = String(cid || '').trim();
+    if (!clean) {
+      return Boolean(planningStatus.pendingNewSession);
+    }
+    return Array.isArray(planningStatus.activeSessionIds) && planningStatus.activeSessionIds.includes(clean);
+  }
+
+  /**
+   * 从当前输入框 React Fiber 中静默提取 Antigravity 原生 /plan 指令的 modelFacingText
+   */
+  function extractNativePlanModelFacingText(footerEl) {
+    const card = footerEl?.closest?.('.surface-composer-card');
+    const candidates = [
+      card?.querySelector?.('[contenteditable="true"]'),
+      footerEl,
+      document.querySelector('.surface-composer-card [contenteditable="true"]'),
+    ].filter(Boolean);
+
+    for (const node of candidates) {
+      const fiberKey = Object.keys(node).find(
+        (key) => key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$')
+      );
+      if (!fiberKey) continue;
+
+      let cursor = node[fiberKey];
+      let depth = 0;
+      while (cursor && depth < 42) {
+        const props = cursor.memoizedProps;
+        if (props && Array.isArray(props.slashCommandItems)) {
+          const planItem =
+            props.slashCommandItems.find((item) => item?.info?.name === 'plan' || item?.title === 'plan') || null;
+          const text = typeof planItem?.info?.modelFacingText === 'string' ? planItem.info.modelFacingText.trim() : '';
+          if (text) return text;
+        }
+        cursor = cursor.return;
+        depth++;
+      }
+    }
+    return '';
+  }
+
+  /**
+   * 首次发现宿主原生 /plan 文本时，静默同步一份给本地 Hook 复用
+   */
+  function maybeSyncNativePlanPrompt(footerEl) {
+    if (nativePlanPromptSynced || !footerEl) return;
+    const text = extractNativePlanModelFacingText(footerEl);
+    if (!text) return;
+    nativePlanPromptSynced = true;
+    void callHostRpc('planning.syncPrompt', { nativePlanText: text });
+  }
+
+  /**
+   * 切换指定输入框对应会话（或空白新会话）的 Planning 只读规划模式
+   */
+  async function togglePlanningModeForFooter(footerEl) {
+    if (planningToggleInFlight) {
+      return { ok: false, busy: true };
+    }
+    const targetFooter =
+      footerEl ||
+      activeFooterEl ||
+      lastOpenedFooterEl ||
+      (document.body && document.body.getElementsByClassName('agy-composer-footer')[0]) ||
+      null;
+    const ctx = targetFooter ? extractComposerContext(targetFooter) : { conversationId: '' };
+    const cid = String(ctx.conversationId || '').trim();
+    const nextEnabled = !isPlanningActiveForCid(cid);
+    const nativePlanText = nextEnabled && targetFooter ? extractNativePlanModelFacingText(targetFooter) : '';
+
+    planningToggleInFlight = true;
+    try {
+      const resp = await callHostRpc('planning.set', {
+        conversationId: cid,
+        enabled: nextEnabled,
+        nativePlanText,
+      });
+      if (resp && resp.planning && typeof resp.planning === 'object') {
+        planningStatus = Object.assign({}, planningStatus, resp.planning, {
+          activeSessionIds: Array.isArray(resp.planning.activeSessionIds) ? resp.planning.activeSessionIds.slice() : [],
+        });
+        planningBootFetched = true;
+        if (planningStatus.hasNativePlanPrompt) nativePlanPromptSynced = true;
+      } else if (!resp?.ok && resp?.error) {
+        planningStatus = Object.assign({}, planningStatus, { error: String(resp.error) });
+      }
+      lastPopoverFingerprint = '';
+      refreshAllFooterPlanningBadges();
+      if (activeFooterEl) {
+        renderPopoverData(activeFooterEl, true);
+      }
+      if (isSettingsModalOpen()) {
+        renderSettingsPageContent();
+      }
+      return {
+        ok: Boolean(resp?.ok),
+        error: resp?.error || '',
+        enabled: isPlanningActiveForCid(cid),
+      };
+    } finally {
+      planningToggleInFlight = false;
+    }
+  }
+
+  /**
+   * 悬停底栏 Planning 胶囊时秒出当前会话模式与只读护栏状态气泡
+   */
+  function showPlanningTip(anchorEl, cid) {
+    if (!anchorEl) {
+      hideQuotaTip();
+      return;
+    }
+    const tip = getOrCreateQuotaTip();
+    tip.classList.toggle('is-dark', isDarkTheme());
+
+    const cleanCid = String(cid || '').trim();
+    const isOn = isPlanningActiveForCid(cleanCid);
+    const isPending = !cleanCid && isOn;
+    const dotColor = isOn ? '#6366f1' : '#64748b';
+    const rows = [
+      `<div class="cr-qtip-row"><span class="cr-qtip-dot" style="background:${dotColor}"></span><span class="cr-qtip-name">模式</span><span class="cr-qtip-pct" style="color:${isOn ? '#6366f1' : 'inherit'}">${isOn ? 'Planning 规划中' : '普通执行模式'}</span><span class="cr-qtip-reset">${isPending ? '新会话预挂起' : cleanCid ? '按会话独立' : '空白新会话'}</span></div>`,
+      `<div class="cr-qtip-row"><span class="cr-qtip-dot" style="background:${isOn ? '#10b981' : '#94a3b8'}"></span><span class="cr-qtip-name">护栏</span><span class="cr-qtip-pct">${isOn ? '拦截工作区写入' : '未启用拦截'}</span><span class="cr-qtip-reset">${isOn ? '放行计划文档 · 点击切回' : '点击一键开启'}</span></div>`,
+    ];
+
+    if (planningStatus.error) {
+      rows.push(
+        `<div class="cr-qtip-row"><span class="cr-qtip-dot" style="background:#f59e0b"></span><span class="cr-qtip-name">提示</span><span class="cr-qtip-pct" style="color:#d97706">${escapeHtml(planningStatus.error)}</span></div>`
+      );
+    } else if (!isOn && Number(planningStatus.activeCount || 0) > 0) {
+      rows.push(
+        `<div class="cr-qtip-row"><span class="cr-qtip-dot" style="background:#818cf8"></span><span class="cr-qtip-name">其他</span><span class="cr-qtip-pct">${planningStatus.activeCount} 个会话规划中</span><span class="cr-qtip-reset">不影响本会话</span></div>`
+      );
+    }
+
+    tip.innerHTML = rows.join('');
+    tip.classList.add('is-open');
+
+    const rect = anchorEl.getBoundingClientRect();
+    const tipW = tip.offsetWidth || 216;
     const tipH = tip.offsetHeight || 56;
     let left = rect.left + rect.width / 2 - tipW / 2;
     left = Math.max(8, Math.min(window.innerWidth - tipW - 8, left));
@@ -3002,7 +3756,15 @@
           <span class="cr-pop-cap" data-role="summary">0 / 512k</span>
         </div>
         <div class="cr-pop-head-right">
-          <span class="cr-pop-steps-tag" data-role="val-steps">0 轮 · 0 步</span>
+          <div class="cr-step-picker" data-role="step-picker">
+            <button type="button" class="cr-pop-steps-tag" data-role="val-steps" aria-haspopup="listbox" aria-expanded="false" title="点击选择历史某一步查看上下文快照">
+              <span data-role="val-steps-text">0 轮 · 0 步</span>
+              <svg class="cr-step-caret" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 4.5L6 7.5L9 4.5" />
+              </svg>
+            </button>
+            <div class="cr-step-menu" data-role="step-menu" role="listbox" aria-label="选择历史步骤快照"></div>
+          </div>
           <button type="button" class="cr-open-settings-btn" data-role="open-settings-btn" title="打开样式与监控设置页面" aria-label="打开 Context Ring 设置">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <circle cx="12" cy="12" r="3.2"/>
@@ -3035,6 +3797,16 @@
         </div>
       </div>
 
+      <div class="cr-step-replay-bar is-hidden" data-role="step-replay-bar">
+        <span class="cr-step-replay-info" data-role="step-replay-info">回放中</span>
+        <div class="cr-step-replay-actions">
+          <button type="button" class="cr-step-nav-btn" data-role="step-prev-btn" title="跳到上一轮">‹</button>
+          <button type="button" class="cr-step-nav-btn" data-role="step-next-btn" title="跳到下一轮">›</button>
+          <button type="button" class="cr-step-nav-btn cr-step-fork-btn" data-role="step-fork-btn" title="从当前回放位置创建分支会话并接续聊天（保留原会话）">分支继续</button>
+          <button type="button" class="cr-step-nav-btn" data-role="step-live-btn" title="恢复实时最新数据">最新</button>
+        </div>
+      </div>
+
       <div class="cr-speed-bar is-hidden" data-role="speed-bar">
         <span class="cr-speed-left">
           <span data-role="speed-tps">⚡ --</span>
@@ -3062,6 +3834,20 @@
           <div class="cr-effort-pill" data-role="effort-pill"></div>
           <div class="cr-effort-grid" data-role="effort-grid"></div>
         </div>
+      </div>
+
+      <div class="cr-plan-bar" data-role="plan-bar">
+        <div class="cr-plan-bar-left">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="2.5" y="2" width="11" height="12" rx="2" />
+            <path d="M5.5 5.5h5" />
+            <path d="M5.5 8.5h5" />
+            <path d="M5.5 11.2h3" />
+          </svg>
+          <span>Planning</span>
+          <span class="cr-plan-bar-sub" data-role="plan-bar-sub">普通模式</span>
+        </div>
+        <button type="button" class="cr-plan-pop-btn" data-role="plan-toggle-btn" title="按会话独立开启或关闭 Planning 只读规划模式">开启</button>
       </div>
 
       <div class="cr-pop-foot">
@@ -3113,10 +3899,111 @@
       hideQuotaTip();
     });
 
-    // 点击卡片内部非模型选择器区域时，自动收起展开的模型系列下拉菜单
+    // 点击卡片内部非模型/步骤选择器区域时，自动收起展开的下拉菜单
     pop.addEventListener('pointerdown', (e) => {
       if (!e.target.closest('[data-role="model-picker"]')) {
         closeModelMenu(pop);
+      }
+      if (!e.target.closest('[data-role="step-picker"]')) {
+        closeStepMenu(pop);
+      }
+    });
+
+    // 右上角「轮 · 步」按钮：展开/收起历史步骤快照选择菜单
+    pop.querySelector('[data-role="val-steps"]').addEventListener('click', (e) => {
+      e.stopPropagation();
+      hideQuotaTip();
+      toggleStepMenu(pop, activeFooterEl || lastOpenedFooterEl);
+    });
+
+    // 历史步骤下拉列表点击选择（支持「按轮跳转 / 按步快照」切换 + 平滑滚动定位到对话）
+    pop.querySelector('[data-role="step-menu"]').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const tabBtn = e.target.closest('[data-step-tab]');
+      if (tabBtn) {
+        const nextMode = tabBtn.getAttribute('data-step-tab');
+        if (nextMode === 'turns' || nextMode === 'steps') {
+          stepMenuMode = nextMode;
+          openStepMenu(pop, activeFooterEl || lastOpenedFooterEl);
+        }
+        return;
+      }
+      const opt = e.target.closest('.cr-step-option');
+      if (!opt) return;
+      const targetFooter = activeFooterEl || lastOpenedFooterEl;
+      const rawStep = opt.getAttribute('data-step');
+      if (rawStep === 'latest') {
+        selectedStepNumber = null;
+        scrollConversationToBottom(targetFooter);
+      } else {
+        const parsed = Number(rawStep);
+        selectedStepNumber = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+        const { conversationId, modelLabel } = extractComposerContext(targetFooter);
+        const data =
+          (conversationId ? usageCache.get(conversationId) : null) || createEmptyWidgetUsage(modelLabel);
+        const stepsList = getUsageStepSnapshots(data);
+        const stepObj = stepsList.find((s) => Number(s.step) === selectedStepNumber) || null;
+        const turnNum = Number(opt.getAttribute('data-turn') || stepObj?.turn || 0);
+        const totalTurns = Number(opt.getAttribute('data-total-turns') || data.turnCount || 0);
+        const promptHint = opt.getAttribute('data-prompt') || stepObj?.promptSnippet || '';
+        if (stepMenuMode === 'steps' && stepObj) {
+          scrollConversationToStep(stepObj, stepsList, totalTurns, targetFooter);
+        } else {
+          scrollConversationToTurn(turnNum, promptHint, totalTurns, targetFooter);
+        }
+      }
+      popoverPinned = true;
+      closeStepMenu(pop);
+      lastPopoverFingerprint = '';
+      if (targetFooter) {
+        renderPopoverData(targetFooter, true);
+      }
+    });
+
+    // 快照回放条：上一步 / 下一步 / 回到最新
+    pop.querySelector('[data-role="step-prev-btn"]').addEventListener('click', (e) => {
+      e.stopPropagation();
+      stepReplayByOffset(-1);
+    });
+    pop.querySelector('[data-role="step-next-btn"]').addEventListener('click', (e) => {
+      e.stopPropagation();
+      stepReplayByOffset(1);
+    });
+    pop.querySelector('[data-role="step-fork-btn"]').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const btn = e.currentTarget;
+      if (btn.disabled) return;
+      const targetFooter = activeFooterEl || lastOpenedFooterEl;
+      btn.disabled = true;
+      btn.classList.remove('is-err');
+      btn.textContent = '分支中...';
+      try {
+        const res = await forkConversationFromReplay(targetFooter);
+        if (res && res.ok) {
+          btn.textContent = '✓ 已分支';
+          setTimeout(() => {
+            btn.textContent = '分支继续';
+          }, 800);
+        } else {
+          btn.classList.add('is-err');
+          btn.textContent = res?.message || '分支失败';
+          setTimeout(() => {
+            btn.classList.remove('is-err');
+            btn.textContent = '分支继续';
+          }, 1800);
+        }
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    pop.querySelector('[data-role="step-live-btn"]').addEventListener('click', (e) => {
+      e.stopPropagation();
+      selectedStepNumber = null;
+      lastPopoverFingerprint = '';
+      const targetFooter = activeFooterEl || lastOpenedFooterEl;
+      scrollConversationToBottom(targetFooter);
+      if (targetFooter) {
+        renderPopoverData(targetFooter, true);
       }
     });
 
@@ -3217,6 +4104,23 @@
       }
     });
 
+    // 点击一键切换当前会话的 Planning 只读规划模式
+    pop.querySelector('[data-role="plan-toggle-btn"]').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const btn = e.currentTarget;
+      if (btn.disabled) return;
+      btn.disabled = true;
+      btn.textContent = '切换中...';
+      try {
+        await togglePlanningModeForFooter(activeFooterEl || lastOpenedFooterEl);
+      } finally {
+        btn.disabled = false;
+        if (activeFooterEl) {
+          renderPopoverData(activeFooterEl, true);
+        }
+      }
+    });
+
     // 点击直接执行 /compact 压缩当前会话（不可用时自动降级复制）
     let compactResetTimer = null;
     pop.querySelector('[data-role="compact-btn"]').addEventListener('click', async (e) => {
@@ -3260,6 +4164,646 @@
   }
 
   /**
+   * 获取会话可用于步级回放的完整步骤列表（兼容仅有 history 字段的旧缓存）
+   */
+  function getUsageStepSnapshots(usageData) {
+    if (Array.isArray(usageData?.steps) && usageData.steps.length > 0) {
+      return usageData.steps;
+    }
+    if (Array.isArray(usageData?.history) && usageData.history.length > 0) {
+      return usageData.history;
+    }
+    return [];
+  }
+
+  /**
+   * 格式化单步 Token 增减量（含暴涨 / 压缩下降高亮类别）
+   */
+  function formatStepDeltaInfo(deltaTokens) {
+    const num = Number(deltaTokens || 0);
+    if (!Number.isFinite(num) || num === 0) {
+      return { text: '+0', cls: '' };
+    }
+    const absText = formatCompactTokens(Math.abs(num));
+    if (num > 0) {
+      return { text: `+${absText}`, cls: num >= 15000 ? 'is-spike' : '' };
+    }
+    return { text: `-${absText}`, cls: num <= -5000 ? 'is-drop' : '' };
+  }
+
+  /**
+   * 收起历史步骤选择下拉菜单
+   */
+  function closeStepMenu(pop) {
+    const targetPop = pop || document.getElementById(POPOVER_ID);
+    if (!targetPop) return;
+    const menu = targetPop.querySelector('[data-role="step-menu"]');
+    const btn = targetPop.querySelector('[data-role="val-steps"]');
+    if (menu) menu.classList.remove('is-open');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+  }
+
+  /**
+   * 对跳转定位到的消息节点施加短暂高亮脉冲，便于视觉聚焦
+   */
+  function flashJumpHighlight(el) {
+    if (!el || !el.classList) return;
+    el.classList.remove('cr-jump-highlight');
+    void el.offsetWidth;
+    el.classList.add('cr-jump-highlight');
+    setTimeout(() => {
+      try {
+        el.classList.remove('cr-jump-highlight');
+      } catch {}
+    }, 1350);
+  }
+
+  /**
+   * 查找当前对话的主滚动容器（严格对齐当前输入框所在列，排除侧边栏、右侧面板与本插件浮层）
+   */
+  function findActiveChatScrollContainer(footerEl) {
+    const composerCard = footerEl?.closest?.('.surface-composer-card') || null;
+    const cardRect = composerCard ? composerCard.getBoundingClientRect() : null;
+
+    function isScrollableCandidate(el) {
+      if (!el || !isElementVisible(el)) return false;
+      if (el.closest?.(`#${POPOVER_ID}, #${SETTINGS_MODAL_ID}, .surface-composer-card`)) return false;
+      if (el.scrollHeight <= el.clientHeight + 20 || el.clientHeight < 140 || el.clientWidth < 220) return false;
+      const ov = typeof getComputedStyle === 'function' ? String(getComputedStyle(el)?.overflowY || '') : '';
+      if (ov !== 'auto' && ov !== 'scroll' && ov !== 'overlay') return false;
+      if (cardRect && cardRect.width > 0) {
+        const r = el.getBoundingClientRect();
+        const overlap = Math.min(r.right, cardRect.right) - Math.max(r.left, cardRect.left);
+        if (overlap < Math.min(120, cardRect.width * 0.45)) return false;
+        if (r.top > cardRect.bottom) return false;
+      }
+      return true;
+    }
+
+    let scope = composerCard?.parentElement || null;
+    while (scope && scope !== document.documentElement) {
+      if (isScrollableCandidate(scope)) return scope;
+      const candidates = Array.from(scope.querySelectorAll?.('div, main, section') || []).filter(isScrollableCandidate);
+      if (candidates.length > 0) {
+        candidates.sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight));
+        return candidates[0];
+      }
+      scope = scope.parentElement;
+    }
+
+    const all = Array.from(document.body?.querySelectorAll?.('main, section, div') || []).filter(isScrollableCandidate);
+    if (all.length === 0) return null;
+    all.sort((a, b) => (b.clientWidth * b.clientHeight) - (a.clientWidth * a.clientHeight));
+    return all[0];
+  }
+
+  /**
+   * 探测 Antigravity 画布左侧的原生圆点轮次导航条（相对当前聊天列定位，避免被侧边栏宽度干扰）
+   */
+  function findNativeLeftTurnDots(totalTurns, footerEl) {
+    if (!document.body || !Number.isFinite(totalTurns) || totalTurns < 2) return null;
+    const scrollEl = findActiveChatScrollContainer(footerEl);
+    const scrollRect = scrollEl ? scrollEl.getBoundingClientRect() : null;
+    const candidates = Array.from(document.body.querySelectorAll?.('div, nav, aside, ul') || []);
+    for (const box of candidates) {
+      if (!isElementVisible(box)) continue;
+      if (box.closest?.(`#${POPOVER_ID}, #${SETTINGS_MODAL_ID}, .surface-composer-card`)) continue;
+      const boxRect = box.getBoundingClientRect();
+      if (boxRect.width > 64) continue;
+      if (scrollRect && (boxRect.right < scrollRect.left - 80 || boxRect.left > scrollRect.left + 120)) continue;
+      const clickables = Array.from(box.children || []).filter((child) => {
+        if (!isElementVisible(child)) return false;
+        const tag = String(child.tagName || '').toUpperCase();
+        const role = child.getAttribute?.('role') || '';
+        const r = child.getBoundingClientRect();
+        return (tag === 'BUTTON' || role === 'button' || child.querySelector?.('button')) && r.width <= 32 && r.height <= 32;
+      });
+      if (clickables.length !== totalTurns) continue;
+      let verticalOrdered = true;
+      for (let i = 1; i < clickables.length; i++) {
+        if (clickables[i].getBoundingClientRect().top <= clickables[i - 1].getBoundingClientRect().top) {
+          verticalOrdered = false;
+          break;
+        }
+      }
+      if (verticalOrdered) {
+        return clickables.map((el) => (String(el.tagName || '').toUpperCase() === 'BUTTON' ? el : el.querySelector?.('button') || el));
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 在对话滚动容器内按文本摘要查找最贴合的消息节点并平滑居中高亮
+   */
+  function scrollToTextSnippetInChat(scrollEl, snippet) {
+    if (!scrollEl) return false;
+    const needle = String(snippet || '')
+      .replace(/…+$/, '')
+      .replace(/[`*_~#>]+/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 22);
+    if (needle.length < 2) return false;
+
+    const blocks = Array.from(scrollEl.querySelectorAll?.('div, p, article, section, li, span') || []);
+    let bestMatch = null;
+    let bestLen = Infinity;
+    for (const el of blocks) {
+      if (!isElementVisible(el)) continue;
+      if (el.closest?.(`#${POPOVER_ID}, #${SETTINGS_MODAL_ID}, .surface-composer-card`)) continue;
+      const txt = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!txt || txt.length > 1800 || !txt.includes(needle)) continue;
+      if (txt.length < bestLen) {
+        bestLen = txt.length;
+        bestMatch = el;
+      }
+    }
+    if (!bestMatch) return false;
+
+    const highlightTarget = bestMatch.closest?.('article, [data-turn], [data-message-id], p, div') || bestMatch;
+    if (typeof highlightTarget.scrollIntoView === 'function') {
+      highlightTarget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } else {
+      const targetRect = highlightTarget.getBoundingClientRect();
+      const containerRect = scrollEl.getBoundingClientRect();
+      const nextTop = scrollEl.scrollTop + (targetRect.top - containerRect.top) - scrollEl.clientHeight * 0.35;
+      scrollEl.scrollTo?.({ top: Math.max(0, Math.round(nextTop)), behavior: 'smooth' });
+    }
+    flashJumpHighlight(highlightTarget);
+    return true;
+  }
+
+  /**
+   * 平滑滚动对话画布定位到指定轮次（多级策略：原生左栏圆点 → 提问文本锚点 → 比例位置）
+   */
+  function scrollConversationToTurn(turnNumber, promptSnippet, totalTurns, footerEl) {
+    const cleanTurn = Math.max(1, Number(turnNumber || 1));
+    const cleanTotal = Math.max(cleanTurn, Number(totalTurns || 1));
+
+    const nativeDots = findNativeLeftTurnDots(cleanTotal, footerEl);
+    if (nativeDots && nativeDots[cleanTurn - 1]) {
+      try {
+        nativeDots[cleanTurn - 1].click();
+        return true;
+      } catch {}
+    }
+
+    const scrollEl = findActiveChatScrollContainer(footerEl);
+    if (!scrollEl) return false;
+
+    if (scrollToTextSnippetInChat(scrollEl, promptSnippet)) {
+      return true;
+    }
+
+    const maxScroll = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+    if (maxScroll > 0) {
+      const ratio = cleanTotal <= 1 ? 0 : (cleanTurn - 1) / (cleanTotal - 1);
+      scrollEl.scrollTo?.({ top: Math.round(maxScroll * ratio), behavior: 'smooth' });
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * 平滑滚动对话画布定位到指定步骤（回放条 < / > 与「按步」列表共用：正文锚点 → 步级比例滚动 → 轮次兜底）
+   */
+  function scrollConversationToStep(stepObj, stepsList, totalTurns, footerEl) {
+    if (!stepObj) return false;
+    const scrollEl = findActiveChatScrollContainer(footerEl);
+
+    if (scrollEl && stepObj.responseSnippet && scrollToTextSnippetInChat(scrollEl, stepObj.responseSnippet)) {
+      return true;
+    }
+
+    if (scrollEl && Array.isArray(stepsList) && stepsList.length > 1) {
+      const idx = stepsList.findIndex((s) => Number(s.step) === Number(stepObj.step));
+      const maxScroll = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+      if (idx >= 0 && maxScroll > 0) {
+        const ratio = idx / (stepsList.length - 1);
+        scrollEl.scrollTo?.({ top: Math.round(maxScroll * ratio), behavior: 'smooth' });
+        return true;
+      }
+    }
+
+    if (stepObj.turn) {
+      return scrollConversationToTurn(stepObj.turn, stepObj.promptSnippet || '', totalTurns, footerEl);
+    }
+    return false;
+  }
+
+  /**
+   * 恢复实时最新时平滑滚回对话底部
+   */
+  function scrollConversationToBottom(footerEl) {
+    const scrollEl = findActiveChatScrollContainer(footerEl);
+    if (scrollEl) {
+      scrollEl.scrollTo?.({ top: scrollEl.scrollHeight, behavior: 'smooth' });
+    }
+  }
+
+  /**
+   * 将步级快照按轮次聚合为「轮次目录」（每轮展示提问摘要、步数区间与轮末上下文总量）
+   */
+  function buildTurnDirectoryFromSteps(stepsList) {
+    const map = new Map();
+    for (let i = 0; i < stepsList.length; i++) {
+      const item = stepsList[i];
+      const turnNum = Number(item.turn || 0);
+      if (turnNum <= 0) continue;
+      let entry = map.get(turnNum);
+      if (!entry) {
+        entry = {
+          turn: turnNum,
+          firstStep: Number(item.step || i + 1),
+          lastStep: Number(item.step || i + 1),
+          stepCount: 0,
+          totalTokens: 0,
+          promptSnippet: '',
+          lastItem: item,
+        };
+        map.set(turnNum, entry);
+      }
+      entry.lastStep = Number(item.step || i + 1);
+      entry.stepCount += 1;
+      entry.totalTokens = Number(item.totalTokens || 0);
+      if (item.promptSnippet && !entry.promptSnippet) {
+        entry.promptSnippet = item.promptSnippet;
+      }
+      entry.lastItem = item;
+    }
+    return Array.from(map.values()).sort((a, b) => a.turn - b.turn);
+  }
+
+  /**
+   * 展开历史步骤/轮次选择下拉菜单（支持按轮跳转定位与按步上下文快照回放）
+   */
+  function openStepMenu(pop, footerEl) {
+    if (!pop) return;
+    closeModelMenu(pop);
+    const { conversationId, modelLabel } = extractComposerContext(footerEl);
+    const data =
+      (conversationId ? usageCache.get(conversationId) : null) || createEmptyWidgetUsage(modelLabel);
+    const stepsList = getUsageStepSnapshots(data);
+    if (stepsList.length === 0) return;
+
+    const menu = pop.querySelector('[data-role="step-menu"]');
+    const btn = pop.querySelector('[data-role="val-steps"]');
+    if (!menu || !btn) return;
+
+    const resolvedLimit = resolveEffectiveLimitForUi(data, modelLabel);
+    const limit = resolvedLimit.limit || 512000;
+    const turnsList = buildTurnDirectoryFromSteps(stepsList);
+    const hasTurns = turnsList.length > 0;
+    const effectiveMode = hasTurns ? stepMenuMode : 'steps';
+    const totalTurns = Math.max(Number(data.turnCount || 0), turnsList.length);
+    const latestStep = stepsList[stepsList.length - 1];
+    const latestPct = limit > 0 ? ((Number(data.totalTokens || 0) / limit) * 100).toFixed(1) : '0.0';
+    const checkSvg =
+      '<svg class="cr-model-option-check" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 6.2L5 8.7L9.5 3.6" /></svg>';
+
+    const headRight = hasTurns
+      ? `<div class="cr-step-menu-tabs"><button type="button" class="cr-step-tab-btn ${effectiveMode === 'turns' ? 'is-active' : ''}" data-step-tab="turns">按轮 (${turnsList.length})</button><button type="button" class="cr-step-tab-btn ${effectiveMode === 'steps' ? 'is-active' : ''}" data-step-tab="steps">按步 (${stepsList.length})</button></div>`
+      : '<span>总计 / 增量</span>';
+
+    const rows = [
+      `<div class="cr-model-menu-head"><span>点击定位并回放</span>${headRight}</div>`,
+      `<button type="button" class="cr-step-option ${selectedStepNumber === null ? 'is-active' : ''}" role="option" data-step="latest" title="滚回对话底部并恢复实时上下文统计">
+        <span class="cr-step-opt-left">
+          <span class="cr-step-live-dot" aria-hidden="true"></span>
+          <span class="cr-step-opt-id">实时最新</span>
+          <span class="cr-step-opt-prompt">第 ${Number(latestStep?.step || data.plannerStepCount || 0)} 步</span>
+        </span>
+        <span class="cr-step-opt-right">
+          <span>${formatCompactTokens(data.totalTokens || 0)}</span>
+          <span class="cr-step-delta">${latestPct}%</span>
+          ${checkSvg}
+        </span>
+      </button>`,
+    ];
+
+    if (effectiveMode === 'turns') {
+      for (const turnEntry of turnsList) {
+        const pctStr = limit > 0 ? ((turnEntry.totalTokens / limit) * 100).toFixed(1) : '0.0';
+        const isSelected =
+          selectedStepNumber !== null &&
+          selectedStepNumber >= turnEntry.firstStep &&
+          selectedStepNumber <= turnEntry.lastStep;
+        const promptText = turnEntry.promptSnippet || `第 ${turnEntry.turn} 轮对话`;
+        const rangeLabel =
+          turnEntry.firstStep === turnEntry.lastStep
+            ? `#${turnEntry.firstStep}`
+            : `#${turnEntry.firstStep}-${turnEntry.lastStep}`;
+        const tipText = `第 ${turnEntry.turn} 轮 (${rangeLabel}) · ${formatExactNumber(turnEntry.totalTokens)} (${pctStr}%) · ${promptText}`;
+
+        rows.push(
+          `<button type="button" class="cr-step-option ${isSelected ? 'is-active' : ''}" role="option" data-step="${turnEntry.lastStep}" data-turn="${turnEntry.turn}" data-total-turns="${totalTurns}" data-prompt="${escapeHtml(turnEntry.promptSnippet || '')}" title="${escapeHtml(tipText)}">
+            <span class="cr-step-opt-left">
+              <span class="cr-step-opt-id">R${turnEntry.turn}</span>
+              <span class="cr-step-opt-prompt">${escapeHtml(promptText)}</span>
+            </span>
+            <span class="cr-step-opt-right">
+              <span>${formatCompactTokens(turnEntry.totalTokens)}</span>
+              <span class="cr-step-delta">${escapeHtml(rangeLabel)}</span>
+              ${checkSvg}
+            </span>
+          </button>`
+        );
+      }
+    } else {
+      for (let i = stepsList.length - 1; i >= 0; i--) {
+        const item = stepsList[i];
+        const stepNum = Number(item.step || i + 1);
+        const turnNum = Number(item.turn || 0);
+        const totalVal = Number(item.totalTokens || 0);
+        const pctStr = limit > 0 ? ((totalVal / limit) * 100).toFixed(1) : '0.0';
+        const prevTotal = i > 0 ? Number(stepsList[i - 1].totalTokens || 0) : 0;
+        const deltaVal = item.deltaTokens !== undefined ? Number(item.deltaTokens) : i === 0 ? totalVal : totalVal - prevTotal;
+        const deltaInfo = formatStepDeltaInfo(deltaVal);
+        const isSelected = selectedStepNumber !== null && selectedStepNumber === stepNum;
+        const labelPrefix = turnNum > 0 ? `R${turnNum} · #${stepNum}` : `#${stepNum}`;
+        const promptHint = item.promptSnippet ? escapeHtml(item.promptSnippet) : '';
+        const tipParts = [
+          turnNum > 0 ? `第 ${turnNum} 轮 · 步 #${stepNum}` : `步 #${stepNum}`,
+          `总计 ${formatExactNumber(totalVal)} (${pctStr}%)`,
+          `增量 ${deltaInfo.text}`,
+        ];
+        if (item.cacheHitRate !== undefined) tipParts.push(`缓存命中 ${Number(item.cacheHitRate).toFixed(1)}%`);
+        if (item.promptSnippet) tipParts.push(`提问: ${item.promptSnippet}`);
+
+        rows.push(
+          `<button type="button" class="cr-step-option ${isSelected ? 'is-active' : ''}" role="option" data-step="${stepNum}" data-turn="${turnNum || 1}" data-total-turns="${totalTurns || 1}" data-prompt="${escapeHtml(item.promptSnippet || '')}" title="${escapeHtml(tipParts.join(' · '))}">
+            <span class="cr-step-opt-left">
+              <span class="cr-step-opt-id">${escapeHtml(labelPrefix)}</span>
+              ${promptHint ? `<span class="cr-step-opt-prompt">${promptHint}</span>` : ''}
+            </span>
+            <span class="cr-step-opt-right">
+              <span>${formatCompactTokens(totalVal)}</span>
+              <span class="cr-step-delta ${deltaInfo.cls}">${escapeHtml(deltaInfo.text)}</span>
+              ${checkSvg}
+            </span>
+          </button>`
+        );
+      }
+    }
+
+    menu.innerHTML = rows.join('');
+    popoverPinned = true;
+    menu.classList.add('is-open');
+    btn.setAttribute('aria-expanded', 'true');
+  }
+
+  /**
+   * 切换历史步骤选择菜单展开状态
+   */
+  function toggleStepMenu(pop, footerEl) {
+    if (!pop) return;
+    const menu = pop.querySelector('[data-role="step-menu"]');
+    if (menu?.classList.contains('is-open')) {
+      closeStepMenu(pop);
+    } else {
+      openStepMenu(pop, footerEl);
+    }
+  }
+
+  /**
+   * 在当前会话轮次目录中向前/向后整轮切换回放快照，并同步滚动定位对话页面（无轮次数据时降级按步）
+   */
+  function stepReplayByOffset(offset) {
+    const targetFooter = activeFooterEl || lastOpenedFooterEl;
+    if (!targetFooter) return;
+    const { conversationId, modelLabel } = extractComposerContext(targetFooter);
+    const data =
+      (conversationId ? usageCache.get(conversationId) : null) || createEmptyWidgetUsage(modelLabel);
+    const stepsList = getUsageStepSnapshots(data);
+    if (stepsList.length === 0) return;
+
+    const turnsList = buildTurnDirectoryFromSteps(stepsList);
+    if (turnsList.length > 0) {
+      stepMenuMode = 'turns';
+      const selectedObj =
+        selectedStepNumber !== null
+          ? stepsList.find((s) => Number(s.step) === selectedStepNumber) || null
+          : null;
+      const currentTurnIdx =
+        selectedStepNumber === null
+          ? turnsList.length - 1
+          : turnsList.findIndex(
+              (t) =>
+                (selectedObj && Number(selectedObj.turn) === t.turn) ||
+                (selectedStepNumber >= t.firstStep && selectedStepNumber <= t.lastStep)
+            );
+      if (currentTurnIdx < 0) {
+        selectedStepNumber = null;
+        scrollConversationToBottom(targetFooter);
+      } else {
+        const nextTurnIdx = currentTurnIdx + offset;
+        if (nextTurnIdx >= turnsList.length) {
+          selectedStepNumber = null;
+          scrollConversationToBottom(targetFooter);
+        } else {
+          const clampedTurn = turnsList[Math.max(0, nextTurnIdx)];
+          selectedStepNumber = Number(clampedTurn.lastStep);
+          const totalTurns = Math.max(Number(data.turnCount || 0), turnsList.length);
+          scrollConversationToTurn(clampedTurn.turn, clampedTurn.promptSnippet || '', totalTurns, targetFooter);
+        }
+      }
+      lastPopoverFingerprint = '';
+      renderPopoverData(targetFooter, true);
+      return;
+    }
+
+    const currentIdx =
+      selectedStepNumber === null
+        ? stepsList.length - 1
+        : stepsList.findIndex((s) => Number(s.step) === selectedStepNumber);
+    if (currentIdx < 0) {
+      selectedStepNumber = null;
+      scrollConversationToBottom(targetFooter);
+    } else {
+      const nextIdx = currentIdx + offset;
+      if (nextIdx >= stepsList.length) {
+        selectedStepNumber = null;
+        scrollConversationToBottom(targetFooter);
+      } else {
+        const clamped = Math.max(0, nextIdx);
+        const stepObj = stepsList[clamped];
+        selectedStepNumber = Number(stepObj.step);
+        const totalTurns = Math.max(Number(data.turnCount || 0), Number(stepObj.turn || 1));
+        scrollConversationToStep(stepObj, stepsList, totalTurns, targetFooter);
+      }
+    }
+    lastPopoverFingerprint = '';
+    renderPopoverData(targetFooter, true);
+  }
+
+  /**
+   * 精确计算从某一步/某一轮创建分支会话时的截断 stepIndex（完整保留该步自身的工具调用返回结果，避免拦腰截断）
+   */
+  async function resolveForkAtStepIndex(lsClient, conversationId, selectedStepObj, stepsList, mode = 'steps') {
+    const rawStepIdx = Number(selectedStepObj?.stepIndex);
+    if (!Number.isInteger(rawStepIdx) || rawStepIdx < 0) return -1;
+
+    const selectedListIdx = Array.isArray(stepsList)
+      ? stepsList.findIndex((s) => Number(s.step) === Number(selectedStepObj.step))
+      : -1;
+    const isLastTrackedStep =
+      selectedListIdx >= 0 && selectedListIdx === stepsList.length - 1;
+
+    if (lsClient && typeof lsClient.getCascadeTrajectory === 'function') {
+      try {
+        const trajRes = await lsClient.getCascadeTrajectory({ cascadeId: conversationId });
+        const trajSteps = Array.isArray(trajRes?.trajectory?.steps) ? trajRes.trajectory.steps : [];
+        if (trajSteps.length > 0) {
+          const getIdx = (s, fallback) =>
+            Number.isInteger(s?.metadata?.stepIndex)
+              ? s.metadata.stepIndex
+              : Number.isInteger(s?.stepIndex)
+                ? s.stepIndex
+                : fallback;
+          const isUserStep = (s) =>
+            s?.step?.case === 'userInput' || s?.type === 'USER_INPUT';
+          const isPlannerOrUserStep = (s) =>
+            isUserStep(s) || s?.step?.case === 'plannerResponse' || s?.type === 'PLANNER_RESPONSE';
+
+          for (let i = 0; i < trajSteps.length; i++) {
+            const s = trajSteps[i];
+            const idx = getIdx(s, i);
+            if (idx <= rawStepIdx) continue;
+            if (mode === 'turns') {
+              if (isUserStep(s)) return Math.max(0, idx - 1);
+            } else if (isPlannerOrUserStep(s)) {
+              return Math.max(0, idx - 1);
+            }
+          }
+          return -1;
+        }
+      } catch {
+        // 轨迹接口不可用时回退使用本地 stepsList 相邻步边界
+      }
+    }
+
+    if (isLastTrackedStep) return -1;
+    const nextStepObj = selectedListIdx >= 0 ? stepsList[selectedListIdx + 1] : null;
+    if (nextStepObj && Number.isInteger(nextStepObj.stepIndex) && nextStepObj.stepIndex > rawStepIdx) {
+      return Math.max(0, nextStepObj.stepIndex - 1);
+    }
+    return rawStepIdx;
+  }
+
+  /**
+   * 从当前回放位置调用原生 forkConversation 创建新分支会话并自动跳转过去
+   */
+  let replayForkSubmitting = false;
+  async function forkConversationFromReplay(footerEl) {
+    if (replayForkSubmitting) return { ok: false, message: '分支中...' };
+    const targetFooter = footerEl || activeFooterEl || lastOpenedFooterEl;
+    if (!targetFooter) return { ok: false, message: '未找到会话' };
+
+    const { conversationId, modelLabel } = extractComposerContext(targetFooter);
+    if (!conversationId) return { ok: false, message: '暂无会话' };
+
+    const data = usageCache.get(conversationId) || createEmptyWidgetUsage(modelLabel);
+    const stepsList = getUsageStepSnapshots(data);
+    const selectedStepObj =
+      selectedStepNumber !== null
+        ? stepsList.find((s) => Number(s.step) === selectedStepNumber) || null
+        : null;
+    if (!selectedStepObj) return { ok: false, message: '请先选一步' };
+
+    replayForkSubmitting = true;
+    try {
+      const { lsClient, router } = getConversationForkTools(targetFooter);
+      const forkAtStepIndex = await resolveForkAtStepIndex(
+        lsClient,
+        conversationId,
+        selectedStepObj,
+        stepsList,
+        stepMenuMode
+      );
+
+      let newCid = '';
+      if (lsClient && typeof lsClient.forkConversation === 'function') {
+        let resp = null;
+        try {
+          resp = await lsClient.forkConversation({
+            sourceCascadeId: conversationId,
+            forkAtStepIndex,
+            targetForkWorkspace: 1,
+          });
+        } catch (err) {
+          const msg = String(err?.message || err || '');
+          if (
+            /invoked subagents/i.test(msg) &&
+            typeof lsClient.startCascade === 'function'
+          ) {
+            const sqId =
+              typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+                ? crypto.randomUUID()
+                : `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`;
+            let started = false;
+            try {
+              await lsClient.startCascade({
+                cascadeId: sqId,
+                trajectoryType: 22,
+                source: 1,
+                baseTrajectoryIdentifier: { identifier: { case: 'cascadeId', value: conversationId } },
+              });
+              started = true;
+              resp = await lsClient.forkConversation({
+                sourceCascadeId: sqId,
+                forkAtStepIndex,
+                targetForkWorkspace: 1,
+              });
+            } finally {
+              if (started && typeof lsClient.deleteCascadeTrajectory === 'function') {
+                try {
+                  await lsClient.deleteCascadeTrajectory(sqId);
+                } catch {}
+              }
+            }
+          } else {
+            throw err;
+          }
+        }
+        newCid = String(resp?.newCascadeId || '').trim();
+      } else if (typeof globalThis.__agyNativeAdapter?.fork === 'function') {
+        const adapterRes = await globalThis.__agyNativeAdapter.fork(conversationId, forkAtStepIndex, {
+          exact: true,
+          autoRename: true,
+        });
+        newCid = String(adapterRes?.conversationId || '').trim();
+      } else {
+        return { ok: false, message: '不支持分支' };
+      }
+
+      if (!newCid) {
+        return { ok: false, message: '未返回新会话' };
+      }
+
+      selectedStepNumber = null;
+      closePopoverNow();
+
+      if (router && typeof router.navigate === 'function') {
+        await router.navigate({ to: `/c/${newCid}` });
+      } else if (typeof history !== 'undefined' && typeof history.pushState === 'function') {
+        history.pushState(null, '', `/c/${newCid}`);
+        window.dispatchEvent(new Event('popstate'));
+      }
+
+      setTimeout(() => {
+        void syncAllComposerFooters(true);
+      }, 180);
+
+      return { ok: true, conversationId: newCid, forkAtStepIndex };
+    } catch {
+      return { ok: false, message: '分支失败' };
+    } finally {
+      replayForkSubmitting = false;
+    }
+  }
+
+  /**
    * 填充并定位悬浮详情卡片
    */
   function renderPopoverData(footerEl, forceRender) {
@@ -3267,23 +4811,61 @@
     pop.classList.toggle('is-dark', isDarkTheme());
 
     const { conversationId, modelLabel } = extractComposerContext(footerEl);
+    if (conversationId !== selectedStepCid) {
+      selectedStepCid = conversationId;
+      selectedStepNumber = null;
+      closeStepMenu(pop);
+    }
+
     const data =
       (conversationId ? usageCache.get(conversationId) : null) || createEmptyWidgetUsage(modelLabel);
+    const stepsList = getUsageStepSnapshots(data);
+    const selectedIdx =
+      selectedStepNumber !== null
+        ? stepsList.findIndex((s) => Number(s.step) === selectedStepNumber)
+        : -1;
+    const selectedStepObj = selectedIdx >= 0 ? stepsList[selectedIdx] : null;
+    if (selectedStepNumber !== null && !selectedStepObj) {
+      selectedStepNumber = null;
+    }
 
     const resolvedLimit = resolveEffectiveLimitForUi(data, modelLabel);
     const limit = resolvedLimit.limit;
-    const total = Number(data.totalTokens || 0);
-    const cacheRead = Number(data.cacheReadTokens || 0);
-    const freshInput = Number(data.inputTokens || 0);
-    const outTokens = Number(data.outputTokens || 0);
-    const cumOut = Number(data.cumulativeOutputTokens || 0);
-    const hitRate = Number(data.cacheHitRate || 0);
+    const isReplaying = Boolean(selectedStepObj);
+    const total = Number(isReplaying ? selectedStepObj.totalTokens : data.totalTokens || 0);
+    const cacheRead = Number(isReplaying ? selectedStepObj.cacheReadTokens : data.cacheReadTokens || 0);
+    const freshInput = Number(isReplaying ? selectedStepObj.inputTokens : data.inputTokens || 0);
+    const outTokens = Number(isReplaying ? selectedStepObj.outputTokens : data.outputTokens || 0);
+    const cumOut = Number(
+      isReplaying
+        ? selectedStepObj.cumulativeOutputTokens || selectedStepObj.outputTokens
+        : data.cumulativeOutputTokens || 0
+    );
+    const stepPromptDenom = cacheRead + freshInput;
+    const hitRate = isReplaying
+      ? selectedStepObj.cacheHitRate !== undefined
+        ? Number(selectedStepObj.cacheHitRate)
+        : stepPromptDenom > 0
+          ? Math.round((cacheRead / stepPromptDenom) * 1000) / 10
+          : 0
+      : Number(data.cacheHitRate || 0);
     const pct = limit > 0 ? (total / limit) * 100 : 0;
     const colors = resolveThemeColors(pct);
-    const sp = data.speed || null;
+    const sp = isReplaying ? null : data.speed || null;
+
+    const turnsList = buildTurnDirectoryFromSteps(stepsList);
+    const activeTurnIdx =
+      isReplaying && selectedStepObj?.turn
+        ? turnsList.findIndex((t) => t.turn === Number(selectedStepObj.turn))
+        : -1;
+    const isTurnReplay = isReplaying && stepMenuMode === 'turns' && activeTurnIdx >= 0;
+    const totalTurnsCount = Math.max(Number(data.turnCount || 0), turnsList.length);
 
     const fingerprint = [
       conversationId,
+      selectedStepNumber === null ? 'live' : selectedStepNumber,
+      stepMenuMode,
+      stepsList.length,
       total,
       cacheRead,
       freshInput,
@@ -3299,6 +4881,10 @@
       modelLabel || data.modelName,
       quotaCacheVersion,
       rehydrateStatus.enabled ? 1 : 0,
+      isPlanningActiveForCid(conversationId) ? 1 : 0,
+      planningStatus.pendingNewSession ? 1 : 0,
+      Number(planningStatus.activeCount || 0),
+      planningStatus.error || '',
       sp ? `${sp.displayTps || ''}:${sp.ttftSec || ''}:${sp.grade || ''}:${sp.thinkingTokens || 0}:${sp.responseTokens || 0}` : '',
       isDarkTheme() ? 1 : 0,
     ].join('|');
@@ -3311,10 +4897,18 @@
       pctEl.style.color = colors.main;
 
       const summaryEl = pop.querySelector('[data-role="summary"]');
-      summaryEl.textContent = `${formatCompactTokens(total)} / ${formatCompactTokens(limit)} · ${resolvedLimit.source}`;
-      summaryEl.title = resolvedLimit.auto
-        ? `自动识别上下文上限：${formatExactNumber(limit)} tokens`
-        : `当前模型自定义/手动上限：${formatExactNumber(limit)} tokens`;
+      summaryEl.textContent = isTurnReplay
+        ? `${formatCompactTokens(total)} / ${formatCompactTokens(limit)} · 第 ${selectedStepObj.turn} 轮`
+        : isReplaying
+          ? `${formatCompactTokens(total)} / ${formatCompactTokens(limit)} · 步 #${selectedStepObj.step}`
+          : `${formatCompactTokens(total)} / ${formatCompactTokens(limit)} · ${resolvedLimit.source}`;
+      summaryEl.title = isTurnReplay
+        ? `历史快照 第 ${selectedStepObj.turn} 轮（步 #${selectedStepObj.step}）：${formatExactNumber(total)} / ${formatExactNumber(limit)} tokens`
+        : isReplaying
+          ? `历史快照 步 #${selectedStepObj.step}：${formatExactNumber(total)} / ${formatExactNumber(limit)} tokens`
+          : resolvedLimit.auto
+            ? `自动识别上下文上限：${formatExactNumber(limit)} tokens`
+            : `当前模型自定义/手动上限：${formatExactNumber(limit)} tokens`;
 
       const denom = Math.max(limit, total, 1);
       const cachePct = Math.min(100, (cacheRead / denom) * 100);
@@ -3335,12 +4929,81 @@
       pop.querySelector('[data-role="chip-cache"]').title = `缓存命中: ${formatExactNumber(cacheRead)} tokens (${hitRate.toFixed(1)}%)`;
 
       pop.querySelector('[data-role="val-input"]').textContent = formatCompactTokens(freshInput);
-      pop.querySelector('[data-role="chip-input"]').title = `本轮新增输入: ${formatExactNumber(freshInput)} tokens`;
+      pop.querySelector('[data-role="chip-input"]').title = isReplaying
+        ? `该步新增输入: ${formatExactNumber(freshInput)} tokens`
+        : `本轮新增输入: ${formatExactNumber(freshInput)} tokens`;
 
       pop.querySelector('[data-role="val-output"]').textContent = formatCompactTokens(cumOut || outTokens);
-      pop.querySelector('[data-role="chip-output"]').title = `本轮输出 ${formatExactNumber(outTokens)} / 累计输出 ${formatExactNumber(cumOut)}`;
+      pop.querySelector('[data-role="chip-output"]').title = isReplaying
+        ? `该步输出 ${formatExactNumber(outTokens)} / 截至该步累计输出 ${formatExactNumber(cumOut)}`
+        : `本轮输出 ${formatExactNumber(outTokens)} / 累计输出 ${formatExactNumber(cumOut)}`;
 
-      pop.querySelector('[data-role="val-steps"]').textContent = `${Number(data.turnCount || 0)} 轮 · ${Number(data.plannerStepCount || 0)} 步`;
+      const stepsBtn = pop.querySelector('[data-role="val-steps"]');
+      const stepsTextEl = pop.querySelector('[data-role="val-steps-text"]') || stepsBtn;
+      if (stepsTextEl) {
+        stepsTextEl.textContent = isTurnReplay
+          ? `第 ${selectedStepObj.turn} / ${totalTurnsCount} 轮`
+          : isReplaying
+            ? `步 #${selectedStepObj.step} / ${Number(data.plannerStepCount || stepsList.length)}`
+            : `${Number(data.turnCount || 0)} 轮 · ${Number(data.plannerStepCount || 0)} 步`;
+      }
+      if (stepsBtn) {
+        stepsBtn.disabled = stepsList.length === 0;
+        stepsBtn.classList.toggle('is-replaying', isReplaying);
+        stepsBtn.title =
+          stepsList.length === 0
+            ? '当前暂无步骤记录'
+            : isTurnReplay
+              ? `正在查看 第 ${selectedStepObj.turn} 轮快照，点击可切换其他轮次或回到最新`
+              : isReplaying
+                ? `正在查看 步 #${selectedStepObj.step} 快照，点击可切换其他步骤或回到最新`
+                : `点击选择历史某一轮查看上下文快照并跳转定位（共 ${turnsList.length || stepsList.length} 项可选）`;
+      }
+
+      // 历史轮次/步骤快照回放条
+      const replayBar = pop.querySelector('[data-role="step-replay-bar"]');
+      if (replayBar) {
+        if (isReplaying) {
+          replayBar.classList.remove('is-hidden');
+          const prevTurnTotal =
+            activeTurnIdx > 0 ? Number(turnsList[activeTurnIdx - 1].totalTokens || 0) : 0;
+          const prevStepTotal =
+            selectedIdx > 0 ? Number(stepsList[selectedIdx - 1].totalTokens || 0) : 0;
+          const deltaVal = isTurnReplay
+            ? activeTurnIdx === 0
+              ? total
+              : total - prevTurnTotal
+            : selectedStepObj.deltaTokens !== undefined
+              ? Number(selectedStepObj.deltaTokens)
+              : selectedIdx === 0
+                ? total
+                : total - prevStepTotal;
+          const deltaInfo = formatStepDeltaInfo(deltaVal);
+          const turnPrefix = selectedStepObj.turn ? `R${selectedStepObj.turn} · ` : '';
+          const replayInfoEl = pop.querySelector('[data-role="step-replay-info"]');
+          if (replayInfoEl) {
+            const labelHtml = isTurnReplay
+              ? `<span>回放 第 ${selectedStepObj.turn} 轮</span>`
+              : `<span>回放 ${escapeHtml(turnPrefix)}步 #${selectedStepObj.step}</span>`;
+            replayInfoEl.innerHTML = `${labelHtml}<span class="cr-step-delta ${deltaInfo.cls}">${escapeHtml(deltaInfo.text)}</span>`;
+            replayInfoEl.title = selectedStepObj.promptSnippet
+              ? `第 ${selectedStepObj.turn || 1} 轮提问：${selectedStepObj.promptSnippet}`
+              : `正在查看 第 ${selectedStepObj.turn || 1} 轮（步 #${selectedStepObj.step}）上下文快照`;
+          }
+          const prevBtn = pop.querySelector('[data-role="step-prev-btn"]');
+          const nextBtn = pop.querySelector('[data-role="step-next-btn"]');
+          const forkBtn = pop.querySelector('[data-role="step-fork-btn"]');
+          if (prevBtn) prevBtn.disabled = turnsList.length > 0 ? activeTurnIdx <= 0 : selectedIdx <= 0;
+          if (nextBtn) nextBtn.disabled = false;
+          if (forkBtn) {
+            forkBtn.disabled = !conversationId;
+            const turnHint = selectedStepObj.turn ? `第 ${selectedStepObj.turn} 轮` : `步 #${selectedStepObj.step}`;
+            forkBtn.title = `从${turnHint}分支出新会话并接续聊天`;
+          }
+        } else {
+          replayBar.classList.add('is-hidden');
+        }
+      }
 
       // 实时生成速度体检条
       const speedBar = pop.querySelector('[data-role="speed-bar"]');
@@ -3403,6 +5066,33 @@
         compactBtn.title = rehydrateStatus.enabled
           ? '点击直接执行 /compact 压缩当前会话（已开启防失忆自动恢复）'
           : '点击直接执行 /compact 压缩当前会话上下文';
+      }
+
+      const planBar = pop.querySelector('[data-role="plan-bar"]');
+      const planSub = pop.querySelector('[data-role="plan-bar-sub"]');
+      const planBtn = pop.querySelector('[data-role="plan-toggle-btn"]');
+      const planOn = isPlanningActiveForCid(conversationId);
+      const planPending = !conversationId && planOn;
+      if (planBar) planBar.classList.toggle('is-on', planOn);
+      if (planSub) {
+        if (planningStatus.error) {
+          planSub.textContent = '配置异常';
+        } else if (planPending) {
+          planSub.textContent = '新会话预挂起';
+        } else if (planOn) {
+          planSub.textContent = '只读护栏生效';
+        } else {
+          planSub.textContent = '普通模式';
+        }
+      }
+      if (planBtn) {
+        planBtn.classList.toggle('is-on', planOn);
+        planBtn.textContent = planOn ? '已开启 · 切回' : '开启规划';
+        planBtn.title = planningStatus.error
+          ? `Planning 护栏异常：${planningStatus.error}`
+          : planOn
+            ? '当前会话已启用只读护栏（允许生成计划文档），点击切回普通执行模式'
+            : '仅为当前会话开启 Planning 只读规划模式，不影响其他会话';
       }
 
       renderThinkingEffortControl(pop, footerEl);
@@ -3594,10 +5284,20 @@
               <div class="cr-pill-row">
                 <button type="button" class="cr-page-pill" data-role="modal-toggle-footer-quota">底栏额度 W/H</button>
                 <button type="button" class="cr-page-pill" data-role="modal-toggle-footer-speed">底栏测速 tok/s</button>
+                <button type="button" class="cr-page-pill" data-role="modal-toggle-footer-planning">底栏 Planning</button>
                 <button type="button" class="cr-page-pill" data-role="modal-toggle-pct">显示百分比</button>
                 <button type="button" class="cr-page-pill" data-role="modal-toggle-anim">动态效果</button>
                 <button type="button" class="cr-page-pill" data-role="modal-toggle-place">输入框靠右</button>
               </div>
+            </div>
+
+            <div class="cr-pref-row">
+              <div style="flex:1;min-width:200px;">
+                <div class="cr-pref-label">Planning 只读规划模式（按会话独立 · Hook 护栏）</div>
+                <div class="cr-rehydrate-desc">复用原生 <code>/plan</code> 规范并挂载 <code>PreToolUse</code> 只读护栏：开启后禁止修改工作区代码（放行 Artifact 规划文档），切回即放行并在空闲时自动卸载 Hook。</div>
+                <div class="cr-rehydrate-alert" data-role="modal-planning-alert" style="display:none;"></div>
+              </div>
+              <button type="button" class="cr-page-pill" data-role="modal-planning-btn">未开启 · 本会话启用</button>
             </div>
 
             <div class="cr-pref-row">
@@ -3792,12 +5492,36 @@
       }
     });
 
+    // 当前会话 Planning 只读规划模式一键启停
+    modal.querySelector('[data-role="modal-planning-btn"]').addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      if (btn.disabled) return;
+      const allFooters = Array.from(document.body.getElementsByClassName('agy-composer-footer'));
+      const footerRef =
+        (activeFooterEl && isElementVisible(activeFooterEl) ? activeFooterEl : null) ||
+        (lastOpenedFooterEl && isElementVisible(lastOpenedFooterEl) ? lastOpenedFooterEl : null) ||
+        allFooters.find((el) => isElementVisible(el)) ||
+        allFooters[0] ||
+        null;
+      btn.disabled = true;
+      btn.textContent = '切换中...';
+      try {
+        await togglePlanningModeForFooter(footerRef);
+      } finally {
+        btn.disabled = false;
+        renderSettingsPageContent();
+      }
+    });
+
     // 显示开关与位置切换
     modal.querySelector('[data-role="modal-toggle-footer-quota"]').addEventListener('click', () => {
       applySettingPatch({ showFooterQuota: currentSettings.showFooterQuota === false });
     });
     modal.querySelector('[data-role="modal-toggle-footer-speed"]').addEventListener('click', () => {
       applySettingPatch({ showFooterSpeed: currentSettings.showFooterSpeed === false });
+    });
+    modal.querySelector('[data-role="modal-toggle-footer-planning"]').addEventListener('click', () => {
+      applySettingPatch({ showFooterPlanning: currentSettings.showFooterPlanning === false });
     });
     modal.querySelector('[data-role="modal-toggle-pct"]').addEventListener('click', () => {
       applySettingPatch({ showPercentText: !currentSettings.showPercentText });
@@ -3913,6 +5637,36 @@
     footerSpeedBtn.classList.toggle('is-active', footerSpeedOn);
     footerSpeedBtn.textContent = footerSpeedOn ? '底栏测速 tok/s：开' : '底栏测速 tok/s：关';
 
+    const footerPlanBtn = modal.querySelector('[data-role="modal-toggle-footer-planning"]');
+    const footerPlanOn = currentSettings.showFooterPlanning !== false;
+    footerPlanBtn.classList.toggle('is-active', footerPlanOn);
+    footerPlanBtn.textContent = footerPlanOn ? '底栏 Planning：开' : '底栏 Planning：关';
+
+    const modalPlanBtn = modal.querySelector('[data-role="modal-planning-btn"]');
+    const modalPlanAlert = modal.querySelector('[data-role="modal-planning-alert"]');
+    const curPlanOn = isPlanningActiveForCid(conversationId);
+    const curPlanPending = !conversationId && curPlanOn;
+    if (modalPlanBtn) {
+      modalPlanBtn.classList.toggle('is-ok', curPlanOn);
+      modalPlanBtn.textContent = curPlanPending
+        ? '✓ 新会话预挂起 · 点击取消'
+        : curPlanOn
+          ? '✓ 本会话已开启 · 点击关闭'
+          : '未开启 · 本会话启用';
+    }
+    if (modalPlanAlert) {
+      if (planningStatus.error) {
+        modalPlanAlert.style.display = 'block';
+        modalPlanAlert.textContent = `状态异常：${planningStatus.error}`;
+      } else if (Number(planningStatus.activeCount || 0) > (curPlanOn && conversationId ? 1 : 0)) {
+        const others = Number(planningStatus.activeCount || 0) - (curPlanOn && conversationId ? 1 : 0);
+        modalPlanAlert.style.display = 'block';
+        modalPlanAlert.textContent = `当前另有 ${others} 个会话处于 Planning 模式（各会话独立互不干扰）。`;
+      } else {
+        modalPlanAlert.style.display = 'none';
+      }
+    }
+
     const pctBtn = modal.querySelector('[data-role="modal-toggle-pct"]');
     pctBtn.classList.toggle('is-active', Boolean(currentSettings.showPercentText));
     pctBtn.textContent = currentSettings.showPercentText ? '显示百分比：开' : '显示百分比：关';
@@ -4006,9 +5760,11 @@
       hidePopoverTimer = null;
     }
     popoverPinned = false;
+    selectedStepNumber = null;
     const pop = document.getElementById(POPOVER_ID);
     if (pop) {
       closeModelMenu(pop);
+      closeStepMenu(pop);
       pop.classList.remove('is-open');
     }
     for (const btn of document.getElementsByClassName('cr-trigger-btn')) {
@@ -4216,6 +5972,112 @@
   }
 
   /**
+   * 在单个 .agy-composer-footer 模型选择器/额度/测速右侧挂载或更新 Planning 模式切换胶囊
+   */
+  function mountOrUpdateFooterPlanning(footerEl, activeCid = '') {
+    let planHostEl = footerEl.querySelector(`.${PLANNING_HOST_CLASS}`);
+
+    if (!currentSettings.enabled || currentSettings.showFooterPlanning === false) {
+      if (planHostEl) planHostEl.remove();
+      return;
+    }
+
+    const { targetContainer, anchor } = resolveFooterLeftFlexAnchor(footerEl);
+    if (!targetContainer) return;
+
+    if (!planHostEl) {
+      planHostEl = document.createElement('div');
+      planHostEl.className = `${PLANNING_HOST_CLASS} no-focus-agent-input notranslate`;
+      planHostEl.setAttribute('data-testid', 'context-ring-planning-host');
+      planHostEl.setAttribute('translate', 'no');
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'cr-plan-pill-btn notranslate';
+      btn.setAttribute('data-testid', 'context-ring-planning-toggle');
+      btn.setAttribute('translate', 'no');
+      btn.innerHTML =
+        '<span class="cr-plan-pill-dot" aria-hidden="true"></span>' +
+        '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="2" width="11" height="12" rx="2"/><path d="M5.5 5.5h5"/><path d="M5.5 8.5h5"/><path d="M5.5 11.2h3"/></svg>' +
+        '<span class="cr-plan-pill-label" translate="no">Planning</span>';
+      planHostEl.appendChild(btn);
+
+      btn.addEventListener('mouseenter', () => {
+        showPlanningTip(btn, planHostEl.dataset.planCid || '');
+      });
+      btn.addEventListener('mouseleave', () => {
+        hideQuotaTip();
+      });
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (btn.disabled) return;
+        btn.disabled = true;
+        void togglePlanningModeForFooter(footerEl).finally(() => {
+          btn.disabled = false;
+          if (btn.matches?.(':hover')) {
+            showPlanningTip(btn, planHostEl.dataset.planCid || '');
+          }
+        });
+      });
+    }
+
+    const speedHostEl = footerEl.querySelector(`.${SPEED_HOST_CLASS}`);
+    const quotaHostEl = footerEl.querySelector(`.${QUOTA_HOST_CLASS}`);
+    const refAnchor =
+      speedHostEl && speedHostEl.parentElement === targetContainer
+        ? speedHostEl
+        : quotaHostEl && quotaHostEl.parentElement === targetContainer
+          ? quotaHostEl
+          : anchor && anchor.parentElement === targetContainer
+            ? anchor
+            : null;
+
+    if (refAnchor) {
+      const childrenArr = Array.from(targetContainer.children || []);
+      const refIdx = childrenArr.indexOf(refAnchor);
+      const currentIdx = childrenArr.indexOf(planHostEl);
+      const needsMove = planHostEl.parentElement !== targetContainer || (refIdx >= 0 && currentIdx < refIdx);
+      if (needsMove) {
+        let insertIdx = refIdx + 1;
+        while (insertIdx < childrenArr.length && childrenArr[insertIdx]?.hasAttribute?.('data-agy-powertools-root')) {
+          insertIdx++;
+        }
+        const nextNode = insertIdx < childrenArr.length ? childrenArr[insertIdx] : null;
+        targetContainer.insertBefore(planHostEl, nextNode);
+      }
+    } else if (planHostEl.parentElement !== targetContainer) {
+      targetContainer.appendChild(planHostEl);
+    }
+
+    const cleanCid = String(activeCid || '').trim();
+    const isOn = isPlanningActiveForCid(cleanCid);
+    const isPending = !cleanCid && isOn;
+    const renderSig = `${cleanCid}|${isOn ? 1 : 0}|${isPending ? 1 : 0}|${planningStatus.error ? 1 : 0}`;
+    if (planHostEl.dataset.renderSig !== renderSig) {
+      planHostEl.dataset.renderSig = renderSig;
+      planHostEl.dataset.planCid = cleanCid;
+      const btn = planHostEl.querySelector('.cr-plan-pill-btn');
+      const labelEl = planHostEl.querySelector('.cr-plan-pill-label');
+      if (btn) {
+        btn.setAttribute('data-active', isOn ? '1' : '0');
+        btn.setAttribute('data-pending', isPending ? '1' : '0');
+        btn.setAttribute('aria-pressed', isOn ? 'true' : 'false');
+        btn.setAttribute(
+          'aria-label',
+          isPending
+            ? 'Planning 模式已为新会话预挂起，点击取消'
+            : isOn
+              ? 'Planning 只读规划模式已开启，点击切回普通模式'
+              : '开启当前会话的 Planning 只读规划模式'
+        );
+      }
+      if (labelEl) {
+        labelEl.textContent = 'Planning';
+      }
+    }
+  }
+
+  /**
    * 刷新页面上全部输入框底栏中的 W / H 额度双圆环
    */
   function refreshAllFooterQuotaBadges() {
@@ -4228,15 +6090,29 @@
   }
 
   /**
+   * 刷新页面上全部输入框底栏中的 Planning 模式切换胶囊
+   */
+  function refreshAllFooterPlanningBadges() {
+    if (!document.body) return;
+    const footers = Array.from(document.body.getElementsByClassName('agy-composer-footer'));
+    for (const footerEl of footers) {
+      if (!document.body.contains(footerEl)) continue;
+      const ctx = extractComposerContext(footerEl);
+      mountOrUpdateFooterPlanning(footerEl, ctx.conversationId);
+    }
+  }
+
+  /**
    * 在单个 .agy-composer-footer 内挂载或更新监控按钮
    */
-  function mountOrUpdateFooter(footerEl, usageData, activeModelLabel = '') {
+  function mountOrUpdateFooter(footerEl, usageData, activeModelLabel = '', activeCid = '') {
     let hostEl = footerEl.querySelector(`.${HOST_CLASS}`);
 
     if (!currentSettings.enabled) {
       if (hostEl) hostEl.remove();
       mountOrUpdateFooterQuota(footerEl, activeModelLabel);
       mountOrUpdateFooterSpeed(footerEl, null);
+      mountOrUpdateFooterPlanning(footerEl, activeCid);
       return false;
     }
 
@@ -4317,6 +6193,7 @@
 
     mountOrUpdateFooterQuota(footerEl, activeModelLabel || usageData?.modelName || '');
     mountOrUpdateFooterSpeed(footerEl, usageData);
+    mountOrUpdateFooterPlanning(footerEl, activeCid);
 
     return true;
   }
@@ -4374,6 +6251,13 @@
             if (resp.rehydrate && typeof resp.rehydrate === 'object') {
               rehydrateStatus = Object.assign({}, rehydrateStatus, resp.rehydrate);
             }
+            if (resp.planning && typeof resp.planning === 'object') {
+              planningStatus = Object.assign({}, planningStatus, resp.planning, {
+                activeSessionIds: Array.isArray(resp.planning.activeSessionIds) ? resp.planning.activeSessionIds.slice() : [],
+              });
+              planningBootFetched = true;
+              if (planningStatus.hasNativePlanPrompt) nativePlanPromptSynced = true;
+            }
           } else if (!usageCache.has(activeCid) && window.__CONTEXT_RING_SEED_USAGE__) {
             const seed = window.__CONTEXT_RING_SEED_USAGE__;
             if (seed && seed.conversationId && seed.conversationId === activeCid) {
@@ -4389,6 +6273,19 @@
         } else if (currentSettings.enabled && !usageCache.has(activeCid)) {
           needsImmediateRemoteFetch = true;
         }
+      } else if (fetchRemote && currentSettings.enabled) {
+        const planResp = await callHostRpc('planning.get', {});
+        if (planResp && planResp.ok && planResp.planning && typeof planResp.planning === 'object') {
+          planningStatus = Object.assign({}, planningStatus, planResp.planning, {
+            activeSessionIds: Array.isArray(planResp.planning.activeSessionIds) ? planResp.planning.activeSessionIds.slice() : [],
+          });
+          planningBootFetched = true;
+          if (planningStatus.hasNativePlanPrompt) nativePlanPromptSynced = true;
+        }
+      }
+
+      if (currentSettings.enabled && !nativePlanPromptSynced) {
+        maybeSyncNativePlanPrompt(footerEl);
       }
 
       const visible = isElementVisible(footerEl);
@@ -4407,7 +6304,7 @@
       const renderUsage = activeCid
         ? usageCache.get(activeCid) || createEmptyWidgetUsage(activeModel)
         : createEmptyWidgetUsage(activeModel);
-      if (mountOrUpdateFooter(footerEl, renderUsage, activeModel)) {
+      if (mountOrUpdateFooter(footerEl, renderUsage, activeModel, activeCid)) {
         mountedCount++;
       }
       if (fetchRemote && currentSettings.enabled) {
@@ -4457,6 +6354,11 @@
       return;
     }
     const pop = document.getElementById(POPOVER_ID);
+    const stepMenu = pop?.querySelector('[data-role="step-menu"]');
+    if (stepMenu?.classList.contains('is-open')) {
+      closeStepMenu(pop);
+      return;
+    }
     const modelMenu = pop?.querySelector('[data-role="model-menu"]');
     if (modelMenu?.classList.contains('is-open')) {
       closeModelMenu(pop);
@@ -4487,7 +6389,8 @@
         target.closest?.(`#${POPOVER_ID}`) ||
         target.closest?.(`.${HOST_CLASS}`) ||
         target.closest?.(`.${QUOTA_HOST_CLASS}`) ||
-        target.closest?.(`.${SPEED_HOST_CLASS}`)
+        target.closest?.(`.${SPEED_HOST_CLASS}`) ||
+        target.closest?.(`.${PLANNING_HOST_CLASS}`)
       ) {
         return false;
       }
@@ -4562,10 +6465,14 @@
       for (const el of Array.from(document.body.getElementsByClassName(SPEED_HOST_CLASS))) {
         el.remove();
       }
+      for (const el of Array.from(document.body.getElementsByClassName(PLANNING_HOST_CLASS))) {
+        el.remove();
+      }
     }
 
     delete window.__CONTEXT_RING_TRIGGER_COMPACT__;
     delete window.__contextRingReceiveRehydrate;
+    delete window.__contextRingReceivePlanning;
     window.__CONTEXT_RING_INSTALLED__ = false;
     window.__CONTEXT_RING_MOUNTED_COUNT__ = 0;
   };

@@ -13,6 +13,12 @@ import { getConversationUsage } from '../lib/transcript-parser.mjs';
 import { enrichUsageWithTelemetry } from '../lib/ls-telemetry.mjs';
 import { getUsageHistoryReport } from '../lib/usage-history.mjs';
 import { getRehydrateStatus, setRehydrateEnabled } from '../lib/rehydrate-manager.mjs';
+import {
+  getPlanningStatus,
+  setPlanningForConversation,
+  clearAllPlanningSessions,
+  isPlanningActiveFor,
+} from '../lib/planning-manager.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,6 +37,7 @@ async function runCli() {
   let conversationId = '';
   let historyPeriod = '';
   let rehydrateAction = '';
+  let planAction = '';
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -64,11 +71,60 @@ async function runCli() {
     } else if (arg === '--footer-speed' && args[i + 1]) {
       const v = String(args[++i]).trim().toLowerCase();
       patch.showFooterSpeed = v === 'on' || v === 'true' || v === '1';
+    } else if (arg === '--footer-planning' && args[i + 1]) {
+      const v = String(args[++i]).trim().toLowerCase();
+      patch.showFooterPlanning = v === 'on' || v === 'true' || v === '1';
     } else if (arg === '--rehydrate' && args[i + 1]) {
       rehydrateAction = String(args[++i]).trim().toLowerCase();
+    } else if (arg === '--plan' && args[i + 1]) {
+      planAction = String(args[++i]).trim().toLowerCase();
     } else if (!arg.startsWith('--') && !conversationId) {
       conversationId = arg.trim();
     }
+  }
+
+  if (planAction) {
+    const planOpts = { pluginRoot: PLUGIN_ROOT, dataDir: paths.dataDir };
+    if (planAction === 'clear' || planAction === 'reset') {
+      const res = clearAllPlanningSessions({ ...planOpts, emitExitNotices: true });
+      process.stdout.write(`${JSON.stringify({ action: 'planning.cleared', ...res }, null, 2)}\n`);
+      return;
+    }
+    if (planAction === 'on' || planAction === 'enable' || planAction === 'off' || planAction === 'disable') {
+      const isEnable = planAction === 'on' || planAction === 'enable';
+      const targetCid =
+        conversationId === 'new'
+          ? ''
+          : conversationId || getConversationUsage('', { knownDistrosFile }).conversationId || '';
+      const res = setPlanningForConversation({ conversationId: targetCid, enabled: isEnable }, planOpts);
+      process.stdout.write(
+        `${JSON.stringify(
+          {
+            action: isEnable ? 'planning.enabled' : 'planning.disabled',
+            conversationId: targetCid || '(pending-new-session)',
+            ...res,
+          },
+          null,
+          2
+        )}\n`
+      );
+      return;
+    }
+    const status = getPlanningStatus(planOpts);
+    const currentCid = conversationId || getConversationUsage('', { knownDistrosFile }).conversationId || '';
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          action: 'planning.status',
+          conversationId: currentCid,
+          activeForConversation: isPlanningActiveFor(status, currentCid),
+          status,
+        },
+        null,
+        2
+      )}\n`
+    );
+    return;
   }
 
   if (rehydrateAction) {
@@ -127,6 +183,8 @@ async function runCli() {
   const usedPercent =
     resolvedLimit.limit > 0 ? Math.round((usage.totalTokens / resolvedLimit.limit) * 1000) / 10 : 0;
 
+  const planning = getPlanningStatus({ pluginRoot: PLUGIN_ROOT, dataDir: paths.dataDir });
+
   process.stdout.write(
     `${JSON.stringify(
       {
@@ -134,6 +192,8 @@ async function runCli() {
         effectiveLimit: resolvedLimit,
         usedPercent,
         rehydrate: getRehydrateStatus({ pluginRoot: PLUGIN_ROOT }),
+        planning,
+        planningActiveForCurrent: isPlanningActiveFor(planning, usage.conversationId),
         usage,
       },
       null,

@@ -10,6 +10,7 @@ import { createEmptyUsage, getConversationUsage } from '../../lib/transcript-par
 import { enrichUsageWithTelemetry } from '../../lib/ls-telemetry.mjs';
 import { getUsageHistoryReport } from '../../lib/usage-history.mjs';
 import { getRehydrateStatus, setRehydrateEnabled } from '../../lib/rehydrate-manager.mjs';
+import { getPlanningStatus, setPlanningForConversation } from '../../lib/planning-manager.mjs';
 import { configureClientLaunchers, getManualLaunchHint } from '../../lib/launcher.mjs';
 import { startCdpInjectionHost } from '../../lib/cdp-host.mjs';
 import { renderSidecarDashboardHtml } from '../../lib/dashboard-ui.mjs';
@@ -236,6 +237,7 @@ async function main() {
             usage,
             health,
             rehydrate: getRehydrateStatus({ pluginRoot: PLUGIN_ROOT }),
+            planning: getPlanningStatus({ pluginRoot: PLUGIN_ROOT, dataDir: paths.dataDir }),
             manualLaunchHint: getManualLaunchHint(),
           })
         );
@@ -266,6 +268,28 @@ async function main() {
           }
           res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ ok: result.ok, error: result.error || '', rehydrate: result.status }));
+        } catch (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, error: err?.message || String(err) }));
+        }
+        return;
+      }
+
+      if (req.method === 'POST' && urlObj.pathname === '/api/planning') {
+        try {
+          const body = await readRequestJson(req);
+          const result = setPlanningForConversation(
+            {
+              conversationId: typeof body?.conversationId === 'string' ? body.conversationId : '',
+              enabled: Boolean(body?.enabled),
+            },
+            { pluginRoot: PLUGIN_ROOT, dataDir: paths.dataDir }
+          );
+          if (result.status) {
+            await cdpHost.broadcastPlanning(result.status);
+          }
+          res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: result.ok, error: result.error || '', planning: result.status }));
         } catch (err) {
           res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ ok: false, error: err?.message || String(err) }));

@@ -47,6 +47,22 @@ import {
   runRehydratePayload,
 } from '../scripts/rehydrate-hook.mjs';
 import {
+  PLANNING_HOOK_NAME,
+  PENDING_SESSION_TTL_MS,
+  buildPlanningHookCommand,
+  getPlanningStatus,
+  isPlanningActiveFor,
+  setPlanningForConversation,
+  syncNativePlanPrompt,
+  removePlanningHook,
+} from '../lib/planning-manager.mjs';
+import {
+  isPathInsideArtifactDir,
+  isSafeReadOnlyCommand,
+  classifyToolCall,
+  runPlanningHookPayload,
+} from '../scripts/planning-hook.mjs';
+import {
   injectDebugPortArg,
   removeDebugPortArg,
   patchLinuxDesktopEntry,
@@ -83,9 +99,17 @@ test('settings: 3 种精选形态、旧形态平滑回退与按模型上下文�
     assert.equal(initial.contextLimit, 0);
     assert.equal(initial.showFooterQuota, true);
     assert.equal(initial.showFooterSpeed, true);
-    assert.equal(store.set({ showFooterQuota: false, showFooterSpeed: false }).showFooterQuota, false);
+    assert.equal(initial.showFooterPlanning, true);
+    assert.equal(
+      store.set({ showFooterQuota: false, showFooterSpeed: false, showFooterPlanning: false }).showFooterQuota,
+      false
+    );
     assert.equal(store.get().showFooterSpeed, false);
-    assert.equal(store.set({ showFooterQuota: true, showFooterSpeed: true }).showFooterSpeed, true);
+    assert.equal(store.get().showFooterPlanning, false);
+    assert.equal(
+      store.set({ showFooterQuota: true, showFooterSpeed: true, showFooterPlanning: true }).showFooterPlanning,
+      true
+    );
 
     // 验证所有 3 种形态均可合法保存
     for (const styleMode of STYLE_MODES) {
@@ -251,6 +275,13 @@ test('transcript-parser: 精确解析扁平与嵌套 Token 字段、缓存命中
     assert.equal(stats.turnCount, 2);
     assert.equal(stats.plannerStepCount, 2);
     assert.equal(stats.history.length, 2);
+    assert.equal(stats.steps.length, 2);
+    assert.equal(stats.steps[0].step, 1);
+    assert.equal(stats.steps[1].step, 2);
+    assert.equal(stats.steps[1].turn, 2);
+    assert.equal(stats.steps[1].cumulativeOutputTokens, 2000);
+    assert.equal(stats.steps[1].cacheHitRate, 90);
+    assert.equal(stats.steps[1].deltaTokens, stats.steps[1].totalTokens - stats.steps[0].totalTokens);
 
     // 追加新步骤后验证缓存自动失效并读取最新值
     const appendedLine = JSON.stringify({
@@ -265,6 +296,8 @@ test('transcript-parser: 精确解析扁平与嵌套 Token 字段、缓存命中
     const updatedStats = parseTranscriptFile(logFile, cid);
     assert.equal(updatedStats.totalTokens, 250500);
     assert.equal(updatedStats.cumulativeOutputTokens, 2500);
+    assert.equal(updatedStats.steps.length, 3);
+    assert.equal(updatedStats.steps[2].deltaTokens, 250500 - 201400);
     assert.equal(updatedStats.cacheHitRate, 98);
   });
 });
@@ -366,12 +399,31 @@ test('cdp-host & dashboard-ui: 目标识别、注入脚本语法合法性与工�
   assert.ok(injectedSource.includes('current-model-quota'));
   assert.ok(injectedSource.includes('agy-context-ring-quota-host'));
   assert.ok(injectedSource.includes('agy-context-ring-speed-host'));
+  assert.ok(injectedSource.includes('agy-context-ring-planning-host'));
   assert.ok(injectedSource.includes('mountOrUpdateFooterQuota'));
   assert.ok(injectedSource.includes('mountOrUpdateFooterSpeed'));
+  assert.ok(injectedSource.includes('mountOrUpdateFooterPlanning'));
   assert.ok(injectedSource.includes('modal-toggle-footer-quota'));
   assert.ok(injectedSource.includes('modal-toggle-footer-speed'));
+  assert.ok(injectedSource.includes('modal-toggle-footer-planning'));
+  assert.ok(injectedSource.includes('modal-planning-btn'));
+  assert.ok(injectedSource.includes('plan-toggle-btn'));
+  assert.ok(injectedSource.includes('step-picker'));
+  assert.ok(injectedSource.includes('step-menu'));
+  assert.ok(injectedSource.includes('step-replay-bar'));
+  assert.ok(injectedSource.includes('openStepMenu'));
+  assert.ok(injectedSource.includes('stepReplayByOffset'));
+  assert.ok(injectedSource.includes('scrollConversationToTurn'));
+  assert.ok(injectedSource.includes('scrollConversationToStep'));
+  assert.ok(injectedSource.includes('scrollToTextSnippetInChat'));
+  assert.ok(injectedSource.includes('findNativeLeftTurnDots'));
+  assert.ok(injectedSource.includes('buildTurnDirectoryFromSteps'));
+  assert.ok(injectedSource.includes('step-fork-btn'));
+  assert.ok(injectedSource.includes('forkConversationFromReplay'));
+  assert.ok(injectedSource.includes('resolveForkAtStepIndex'));
   assert.ok(injectedSource.includes('agy-context-ring-quota-tip'));
   assert.ok(injectedSource.includes('showQuotaTip'));
+  assert.ok(injectedSource.includes('showPlanningTip'));
   assert.ok(injectedSource.includes('cr-gauge-track'));
   assert.ok(injectedSource.includes('agy-context-ring-settings-modal'));
   assert.ok(injectedSource.includes('getComposerCompactController'));
@@ -396,9 +448,12 @@ test('cdp-host & dashboard-ui: 目标识别、注入脚本语法合法性与工�
   assert.ok(html.includes('/api/state'));
   assert.ok(html.includes('/api/history'));
   assert.ok(html.includes('/api/rehydrate'));
+  assert.ok(html.includes('/api/planning'));
   assert.ok(html.includes('/api/settings'));
   assert.ok(html.includes('toggleFooterQuotaBtn'));
   assert.ok(html.includes('toggleFooterSpeedBtn'));
+  assert.ok(html.includes('toggleFooterPlanningBtn'));
+  assert.ok(html.includes('planningToggleBtn'));
   assert.ok(html.includes('/api/compact'));
 });
 
@@ -1002,4 +1057,1033 @@ test('rehydrate: 压缩后防失忆 Hook 提取、脱敏、敏感文件拦截、
     });
     assert.deepEqual(secondOut, {});
   });
+});
+
+test('planning-manager: 按会话独立开关、空白新会话预挂起、hooks.json 三态自动同步与卸载清理', async () => {
+  await withTempDir((tempDir) => {
+    const configDir = path.join(tempDir, '.gemini', 'config');
+    fs.mkdirSync(configDir, { recursive: true });
+    const hooksPath = path.join(configDir, 'hooks.json');
+    fs.writeFileSync(
+      hooksPath,
+      JSON.stringify({ 'keep-me-hook': { SessionStart: [{ type: 'command', command: 'echo keep' }] } }),
+      'utf8'
+    );
+
+    const opts = { homeDir: tempDir };
+    const cidA = 'aaaaaaaa-1111-2222-3333-000000000001';
+    const cidB = 'bbbbbbbb-1111-2222-3333-000000000002';
+
+    const s0 = getPlanningStatus(opts);
+    assert.equal(s0.hookRegistered, false);
+    assert.equal(s0.hookMode, 'off');
+    assert.equal(s0.activeCount, 0);
+
+    // 1. 为会话 A 开启 Planning：应注册 PreInvocation + PreToolUse，且不影响会话 B 与空白新会话
+    const enA = setPlanningForConversation({ conversationId: cidA, enabled: true }, opts);
+    assert.equal(enA.ok, true);
+    assert.equal(enA.status.hookRegistered, true);
+    assert.equal(enA.status.hookMode, 'full');
+    assert.equal(isPlanningActiveFor(enA.status, cidA), true);
+    assert.equal(isPlanningActiveFor(enA.status, cidB), false);
+    assert.equal(isPlanningActiveFor(enA.status, ''), false);
+
+    const hooksAfterOn = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
+    assert.ok(hooksAfterOn['keep-me-hook'], '不得破坏已有其他 Hook');
+    assert.equal(hooksAfterOn[PLANNING_HOOK_NAME]?.PreInvocation?.length, 1);
+    assert.equal(hooksAfterOn[PLANNING_HOOK_NAME]?.PreToolUse?.length, 1);
+
+    // 验证 Windows Hook 命令格式：真实 node.exe 使用 call 前缀，Electron 外壳必须附加 ELECTRON_RUN_AS_NODE=1
+    const winNodeCmd = buildPlanningHookCommand('C:\\tmp\\planning-hook.mjs', {
+      platform: 'win32',
+      nodePath: 'C:\\Program Files\\nodejs\\node.exe',
+    });
+    assert.ok(winNodeCmd.startsWith('call "C:\\Program Files\\nodejs\\node.exe"'), 'Windows node.exe 必须使用 call 避免 cmd /c 引号剥离');
+    const winElectronCmd = buildPlanningHookCommand('C:\\tmp\\planning-hook.mjs', {
+      platform: 'win32',
+      nodePath: 'C:\\Users\\demo\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe',
+    });
+    assert.ok(winElectronCmd.startsWith('set ELECTRON_RUN_AS_NODE=1&& '), 'Electron 二进制必须注入 ELECTRON_RUN_AS_NODE=1');
+
+    // 2. 从未注入提示就立即关闭会话 A：直接卸载 Hook（零残留）
+    const offEarly = setPlanningForConversation({ conversationId: cidA, enabled: false }, opts);
+    assert.equal(offEarly.ok, true);
+    assert.equal(offEarly.status.hookMode, 'off');
+    assert.equal(offEarly.status.hookRegistered, false);
+    const hooksAfterEarlyOff = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
+    assert.equal(hooksAfterEarlyOff[PLANNING_HOOK_NAME], undefined);
+    assert.ok(hooksAfterEarlyOff['keep-me-hook']);
+
+    // 3. 空白新会话提前预挂起（pendingNewSession）与 TTL 自动过期
+    const baseTime = Date.now();
+    const armed = setPlanningForConversation({ conversationId: '', enabled: true }, { ...opts, now: baseTime });
+    assert.equal(armed.ok, true);
+    assert.equal(armed.status.pendingNewSession, true);
+    assert.equal(armed.status.hookMode, 'full');
+    assert.equal(isPlanningActiveFor(armed.status, ''), true);
+    assert.equal(isPlanningActiveFor(armed.status, cidB), false);
+
+    const afterExpire = getPlanningStatus({ ...opts, now: baseTime + PENDING_SESSION_TTL_MS + 5000 });
+    assert.equal(afterExpire.pendingNewSession, false);
+
+    // 4. 非法 conversationId 被安全拒绝
+    const badRes = setPlanningForConversation({ conversationId: '../bad/id', enabled: true }, opts);
+    assert.equal(badRes.ok, false);
+
+    // 5. 卸载清理无痕移除 Hook 与状态，保留外部 Hook
+    const cleaned = removePlanningHook(opts);
+    assert.equal(cleaned.ok, true);
+    assert.equal(cleaned.status.hookMode, 'off');
+    const hooksFinal = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
+    assert.equal(hooksFinal[PLANNING_HOOK_NAME], undefined);
+    assert.ok(hooksFinal['keep-me-hook']);
+
+    // 6. hooks.json 损坏时 fail-closed，绝不假显示开启
+    fs.writeFileSync(hooksPath, '{ broken json', 'utf8');
+    const corruptRes = setPlanningForConversation({ conversationId: cidA, enabled: true }, opts);
+    assert.equal(corruptRes.ok, false);
+    assert.equal(isPlanningActiveFor(corruptRes.status, cidA), false);
+  });
+});
+
+test('planning-hook: 原生 /plan 复用、缓存防重复、空白新会话晋升、只读护栏与退出自动卸载', async () => {
+  await withTempDir((tempDir) => {
+    const opts = { homeDir: tempDir };
+    const wsDir = path.join(tempDir, 'workspace');
+    const artifactDir = path.join(tempDir, 'artifacts', 'session-a');
+    fs.mkdirSync(wsDir, { recursive: true });
+    fs.mkdirSync(artifactDir, { recursive: true });
+
+    const cidA = 'cccccccc-1111-2222-3333-00000000000a';
+    const cidB = 'dddddddd-1111-2222-3333-00000000000b';
+    const cidNew = 'eeeeeeee-1111-2222-3333-00000000000c';
+    const hooksPath = path.join(tempDir, '.gemini', 'config', 'hooks.json');
+
+    // 1. 路径边界与只读命令判定单测
+    assert.equal(isPathInsideArtifactDir(path.join(artifactDir, 'implementation_plan.md'), artifactDir, wsDir), true);
+    assert.equal(isPathInsideArtifactDir(path.join(artifactDir, 'evil.mjs'), artifactDir, wsDir), false);
+    assert.equal(isPathInsideArtifactDir(path.join(artifactDir, '..', 'workspace', 'hack.md'), artifactDir, wsDir), false);
+    assert.equal(isPathInsideArtifactDir(path.join(wsDir, 'README.md'), artifactDir, wsDir), false);
+
+    assert.equal(isSafeReadOnlyCommand('git status'), true);
+    assert.equal(isSafeReadOnlyCommand('git log --oneline -n 10'), true);
+    assert.equal(isSafeReadOnlyCommand('rg -i planning lib'), true);
+    assert.equal(isSafeReadOnlyCommand('git status && rm -rf .'), false);
+    assert.equal(isSafeReadOnlyCommand('git diff --output=dump.txt'), false);
+    assert.equal(isSafeReadOnlyCommand('npm install lodash'), false);
+    assert.equal(isSafeReadOnlyCommand('echo hi > file.txt'), false);
+
+    // 2. 缓存宿主原生 /plan 文本并开启会话 A 的 Planning 模式
+    const syncRes = syncNativePlanPrompt('<PLAN>Official Native AGY Plan Spec</PLAN>', opts);
+    assert.equal(syncRes.ok, true);
+    assert.equal(syncRes.updated, true);
+
+    assert.equal(setPlanningForConversation({ conversationId: cidA, enabled: true }, opts).ok, true);
+
+    const transcriptA = path.join(tempDir, 'transcript-a.jsonl');
+    fs.writeFileSync(transcriptA, JSON.stringify({ type: 'USER_INPUT', content: '重构认证' }) + '\n', 'utf8');
+
+    // 首次 PreInvocation 注入原生 /plan 规范
+    const inv1 = runPlanningHookPayload(
+      {
+        hookEventName: 'PreInvocation',
+        conversationId: cidA,
+        artifactDirectoryPath: artifactDir,
+        transcriptPath: transcriptA,
+        invocationNum: 1,
+        initialNumSteps: 1,
+      },
+      opts
+    );
+    assert.equal(inv1.injectSteps?.length, 1);
+    const msg1 = inv1.injectSteps[0].systemMessage.systemMessage;
+    assert.ok(msg1.includes('Official Native AGY Plan Spec'), '应优先复用缓存的原生 /plan 规范');
+    assert.ok(msg1.includes('PreToolUse'));
+
+    // 同一会话第二次 PreInvocation 不重复注入（保护 Prompt Cache）
+    const inv2 = runPlanningHookPayload(
+      {
+        hookEventName: 'PreInvocation',
+        conversationId: cidA,
+        artifactDirectoryPath: artifactDir,
+        transcriptPath: transcriptA,
+        invocationNum: 2,
+        initialNumSteps: 1,
+      },
+      opts
+    );
+    assert.deepEqual(inv2, {});
+
+    // 发生 CHECKPOINT 压缩后自动补注一次规划提示
+    fs.appendFileSync(transcriptA, JSON.stringify({ type: 'CHECKPOINT', created_at: '2026-11-27T12:00:00Z' }) + '\n');
+    const invAfterCompact = runPlanningHookPayload(
+      {
+        hookEventName: 'PreInvocation',
+        conversationId: cidA,
+        artifactDirectoryPath: artifactDir,
+        transcriptPath: transcriptA,
+        invocationNum: 1,
+        initialNumSteps: 12,
+      },
+      opts
+    );
+    assert.equal(invAfterCompact.injectSteps?.length, 1);
+
+    // 3. PreToolUse 只读护栏：会话 A 放行只读工具与 Artifact 规划文档，硬拦截工作区写入
+    const baseToolPayloadA = {
+      hookEventName: 'PreToolUse',
+      conversationId: cidA,
+      artifactDirectoryPath: artifactDir,
+      cwd: wsDir,
+      workspacePaths: [wsDir],
+    };
+
+    assert.equal(
+      runPlanningHookPayload({ ...baseToolPayloadA, toolCall: { name: 'read_file', args: { Path: path.join(wsDir, 'a.js') } } }, opts).decision,
+      'allow'
+    );
+    assert.equal(
+      runPlanningHookPayload({ ...baseToolPayloadA, toolCall: { name: 'mcp_agy-fast_fast_batch_search', args: {} } }, opts).decision,
+      'allow'
+    );
+    assert.equal(
+      runPlanningHookPayload({ ...baseToolPayloadA, toolCall: { name: 'invoke_subagent', args: { TypeName: 'research' } } }, opts).decision,
+      'allow'
+    );
+    assert.equal(
+      runPlanningHookPayload({ ...baseToolPayloadA, toolCall: { name: 'run_command', args: { CommandLine: 'git status' } } }, opts).decision,
+      'allow'
+    );
+    assert.equal(
+      runPlanningHookPayload(
+        { ...baseToolPayloadA, toolCall: { name: 'write_file', args: { Path: path.join(artifactDir, 'implementation_plan.md') } } },
+        opts
+      ).decision,
+      'allow',
+      'Artifact 目录内的规划文档必须放行'
+    );
+
+    assert.equal(
+      runPlanningHookPayload(
+        { ...baseToolPayloadA, toolCall: { name: 'edit_file', args: { Path: path.join(wsDir, 'index.js') } } },
+        opts
+      ).decision,
+      'deny',
+      '工作区代码编辑必须被硬拦截'
+    );
+    assert.equal(
+      runPlanningHookPayload(
+        {
+          ...baseToolPayloadA,
+          toolCall: {
+            name: 'mcp_agy-fast_fast_apply_edits',
+            args: { cwd: wsDir, edits: [{ path: 'lib/settings.mjs', hunks: [] }] },
+          },
+        },
+        opts
+      ).decision,
+      'deny'
+    );
+    assert.equal(
+      runPlanningHookPayload(
+        { ...baseToolPayloadA, toolCall: { name: 'run_command', args: { CommandLine: 'npm test && rm -rf dist' } } },
+        opts
+      ).decision,
+      'deny'
+    );
+    assert.equal(
+      runPlanningHookPayload(
+        { ...baseToolPayloadA, toolCall: { name: 'invoke_subagent', args: { TypeName: 'self' } } },
+        opts
+      ).decision,
+      'deny'
+    );
+    assert.equal(classifyToolCall({ name: 'delete_file', args: { Path: path.join(wsDir, 'a.js') } }, baseToolPayloadA).decision, 'deny');
+
+    // 未开启 Planning 的会话 B 完全不受影响
+    assert.equal(
+      runPlanningHookPayload(
+        {
+          hookEventName: 'PreToolUse',
+          conversationId: cidB,
+          artifactDirectoryPath: artifactDir,
+          cwd: wsDir,
+          toolCall: { name: 'edit_file', args: { Path: path.join(wsDir, 'index.js') } },
+        },
+        opts
+      ).decision,
+      'allow',
+      '其他会话必须完全放行'
+    );
+
+    // 4. 关闭会话 A：hooks.json 立即降级为 exit-only（零 PreToolUse），工具立刻放行，下轮自动投递退出通知并注销 Hook
+    const offA = setPlanningForConversation({ conversationId: cidA, enabled: false }, opts);
+    assert.equal(offA.ok, true);
+    assert.equal(offA.status.hookMode, 'exit-only');
+    const hooksExitOnly = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
+    assert.equal(hooksExitOnly[PLANNING_HOOK_NAME]?.PreInvocation?.length, 1);
+    assert.equal(hooksExitOnly[PLANNING_HOOK_NAME]?.PreToolUse, undefined, '关闭后应立即剥离 PreToolUse 消除写工具延迟');
+
+    assert.equal(
+      runPlanningHookPayload(
+        { ...baseToolPayloadA, toolCall: { name: 'edit_file', args: { Path: path.join(wsDir, 'index.js') } } },
+        opts
+      ).decision,
+      'allow'
+    );
+
+    const exitInv = runPlanningHookPayload(
+      { hookEventName: 'PreInvocation', conversationId: cidA, invocationNum: 1, initialNumSteps: 15 },
+      opts
+    );
+    assert.equal(exitInv.injectSteps?.length, 1);
+    assert.ok(exitInv.injectSteps[0].systemMessage.systemMessage.includes('Planning Mode EXITED'));
+    const hooksAfterExit = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
+    assert.equal(hooksAfterExit[PLANNING_HOOK_NAME], undefined, '投递完退出通知且全机空闲后应自动注销 Hook');
+
+    // 5. 空白新会话预挂起晋升：老会话不可误领，全新会话精准认领
+    assert.equal(setPlanningForConversation({ conversationId: '', enabled: true }, opts).ok, true);
+    const oldTranscript = path.join(tempDir, 'transcript-old.jsonl');
+    fs.writeFileSync(oldTranscript, JSON.stringify({ type: 'PLANNER_RESPONSE', content: 'old' }) + '\n', 'utf8');
+
+    const oldClaimAttempt = runPlanningHookPayload(
+      {
+        hookEventName: 'PreInvocation',
+        conversationId: cidB,
+        transcriptPath: oldTranscript,
+        invocationNum: 1,
+        initialNumSteps: 8,
+      },
+      opts
+    );
+    assert.deepEqual(oldClaimAttempt, {}, '老会话绝不得误领 pendingNewSession');
+    assert.equal(getPlanningStatus(opts).pendingNewSession, true);
+
+    const newClaim = runPlanningHookPayload(
+      {
+        hookEventName: 'PreInvocation',
+        conversationId: cidNew,
+        artifactDirectoryPath: artifactDir,
+        invocationNum: 1,
+        initialNumSteps: 1,
+      },
+      opts
+    );
+    assert.equal(newClaim.injectSteps?.length, 1);
+    const stAfterClaim = getPlanningStatus(opts);
+    assert.equal(stAfterClaim.pendingNewSession, false);
+    assert.equal(isPlanningActiveFor(stAfterClaim, cidNew), true);
+
+    // 6. 对话内容/工具参数中出现 "CHECKPOINT" 字样不得误触发重复注入
+    const cidProceed = 'ffffffff-1111-2222-3333-00000000000d';
+    const transcriptProceed = path.join(tempDir, 'transcript-proceed.jsonl');
+    fs.writeFileSync(
+      transcriptProceed,
+      [
+        JSON.stringify({ type: 'USER_INPUT', content: '<USER_REQUEST>先帮我规划认证重构</USER_REQUEST>' }),
+        JSON.stringify({ type: 'PLANNER_RESPONSE', content: '这里只是正文里提到了 "CHECKPOINT" 字样，并非真实压缩点' }),
+      ].join('\n') + '\n',
+      'utf8'
+    );
+    assert.equal(setPlanningForConversation({ conversationId: cidProceed, enabled: true }, opts).ok, true);
+    const pInv1 = runPlanningHookPayload(
+      {
+        hookEventName: 'PreInvocation',
+        conversationId: cidProceed,
+        transcriptPath: transcriptProceed,
+        artifactDirectoryPath: artifactDir,
+        lastUserInput: '先帮我规划认证重构',
+        invocationNum: 1,
+        initialNumSteps: 1,
+      },
+      opts
+    );
+    assert.equal(pInv1.injectSteps?.length, 1);
+
+    // 追加一条正文包含 "CHECKPOINT" 的 PLANNER_RESPONSE，验证不会重复注入
+    fs.appendFileSync(
+      transcriptProceed,
+      JSON.stringify({ type: 'PLANNER_RESPONSE', content: '再次检索 "CHECKPOINT" 关键词' }) + '\n',
+      'utf8'
+    );
+    const pInv2 = runPlanningHookPayload(
+      {
+        hookEventName: 'PreInvocation',
+        conversationId: cidProceed,
+        transcriptPath: transcriptProceed,
+        artifactDirectoryPath: artifactDir,
+        lastUserInput: '先帮我规划认证重构',
+        invocationNum: 2,
+        initialNumSteps: 1,
+      },
+      opts
+    );
+    assert.deepEqual(pInv2, {}, '正文中包含 "CHECKPOINT" 字样不得误判为压缩点重复注入');
+
+    // 用户仅回复修改意见（不含原生 Proceed 批准句）→ 必须保持 Planning 只读拦截
+    const reviewMsg = 'Comments on artifact URI: file:///plan.md\n请把第二步拆得更细一点';
+    fs.appendFileSync(transcriptProceed, JSON.stringify({ type: 'USER_INPUT', content: reviewMsg }) + '\n', 'utf8');
+    const pReview = runPlanningHookPayload(
+      {
+        hookEventName: 'PreInvocation',
+        conversationId: cidProceed,
+        transcriptPath: transcriptProceed,
+        lastUserInput: reviewMsg,
+        invocationNum: 1,
+        initialNumSteps: 4,
+      },
+      opts
+    );
+    assert.deepEqual(pReview, {});
+    assert.equal(isPlanningActiveFor(getPlanningStatus(opts), cidProceed), true);
+    assert.equal(
+      runPlanningHookPayload(
+        {
+          hookEventName: 'PreToolUse',
+          conversationId: cidProceed,
+          artifactDirectoryPath: artifactDir,
+          cwd: wsDir,
+          toolCall: { name: 'edit_file', args: { Path: path.join(wsDir, 'auth.js') } },
+        },
+        opts
+      ).decision,
+      'deny'
+    );
+
+    // 用户点击原生 Proceed 批准计划 → 自动退出 Planning、解除 PreToolUse 护栏并投递退出提示
+    const proceedMsg =
+      'Comments on artifact URI: file:///c%3A/artifacts/implementation_plan.md\n\nThe user has approved this document.\n\n<USER_REQUEST>\n\n</USER_REQUEST>';
+    fs.appendFileSync(transcriptProceed, JSON.stringify({ type: 'USER_INPUT', content: proceedMsg }) + '\n', 'utf8');
+    const pApproved = runPlanningHookPayload(
+      {
+        hookEventName: 'PreInvocation',
+        conversationId: cidProceed,
+        transcriptPath: transcriptProceed,
+        lastUserInput: proceedMsg,
+        invocationNum: 1,
+        initialNumSteps: 6,
+      },
+      opts
+    );
+    assert.equal(pApproved.injectSteps?.length, 1);
+    assert.ok(pApproved.injectSteps[0].systemMessage.systemMessage.includes('Proceed'));
+    assert.ok(pApproved.injectSteps[0].systemMessage.systemMessage.includes('Planning Mode EXITED'));
+    assert.equal(isPlanningActiveFor(getPlanningStatus(opts), cidProceed), false, '点击 Proceed 后该会话必须自动退出 Planning');
+    assert.equal(
+      runPlanningHookPayload(
+        {
+          hookEventName: 'PreToolUse',
+          conversationId: cidProceed,
+          artifactDirectoryPath: artifactDir,
+          cwd: wsDir,
+          toolCall: { name: 'edit_file', args: { Path: path.join(wsDir, 'auth.js') } },
+        },
+        opts
+      ).decision,
+      'allow',
+      '点击 Proceed 后必须立刻放行工作区代码编辑'
+    );
+
+    // 更早之前已有历史 Proceed，随后重新开启 Planning 并发送新请求时，绝不得被旧 Proceed 误退出
+    const newReqAfterOldProceed = '<USER_REQUEST>再规划第二个模块</USER_REQUEST>';
+    fs.appendFileSync(
+      transcriptProceed,
+      JSON.stringify({ type: 'USER_INPUT', content: newReqAfterOldProceed }) + '\n',
+      'utf8'
+    );
+    assert.equal(setPlanningForConversation({ conversationId: cidProceed, enabled: true }, opts).ok, true);
+    const pReenter = runPlanningHookPayload(
+      {
+        hookEventName: 'PreInvocation',
+        conversationId: cidProceed,
+        transcriptPath: transcriptProceed,
+        lastUserInput: '再规划第二个模块',
+        invocationNum: 1,
+        initialNumSteps: 9,
+      },
+      opts
+    );
+    assert.equal(pReenter.injectSteps?.length, 1);
+    assert.ok(pReenter.injectSteps[0].systemMessage.systemMessage.includes('Planning Mode ACTIVE'));
+    assert.equal(isPlanningActiveFor(getPlanningStatus(opts), cidProceed), true);
+  });
+});
+
+test('composer-widget (planning): 底栏 Planning 胶囊按会话隔离、原生 /plan 采样、隐藏开关与无痕卸载', async () => {
+  function createMockClassList() {
+    const set = new Set();
+    return {
+      add: (...names) => names.forEach((n) => set.add(n)),
+      remove: (...names) => names.forEach((n) => set.delete(n)),
+      toggle: (name, force) => {
+        if (force === undefined) {
+          if (set.has(name)) { set.delete(name); return false; }
+          set.add(name); return true;
+        }
+        if (force) set.add(name);
+        else set.delete(name);
+        return Boolean(force);
+      },
+      contains: (name) => set.has(name),
+      toString: () => Array.from(set).join(' '),
+    };
+  }
+
+  function createMockEl(tagName = 'div') {
+    const attrs = new Map();
+    const el = {
+      tagName: String(tagName).toUpperCase(),
+      nodeType: 1,
+      id: '',
+      className: '',
+      dataset: {},
+      style: {},
+      textContent: '',
+      disabled: false,
+      children: [],
+      parentElement: null,
+      classList: createMockClassList(),
+      _innerHTML: '',
+      _listeners: new Map(),
+      setAttribute(k, v) {
+        attrs.set(k, String(v));
+        if (k === 'id') this.id = String(v);
+        if (k === 'class') this.className = String(v);
+      },
+      getAttribute(k) { return attrs.has(k) ? attrs.get(k) : null; },
+      hasAttribute(k) { return attrs.has(k); },
+      addEventListener(ev, fn) {
+        if (!this._listeners.has(ev)) this._listeners.set(ev, new Set());
+        this._listeners.get(ev).add(fn);
+      },
+      removeEventListener(ev, fn) { this._listeners.get(ev)?.delete(fn); },
+      dispatchEvent(evName, evObj = {}) {
+        for (const fn of this._listeners.get(evName) || []) fn(evObj);
+      },
+      appendChild(child) {
+        if (child.parentElement) child.remove();
+        child.parentElement = this;
+        this.children.push(child);
+        return child;
+      },
+      insertBefore(child, ref) {
+        if (child.parentElement) child.remove();
+        child.parentElement = this;
+        const idx = ref ? this.children.indexOf(ref) : -1;
+        if (idx >= 0) this.children.splice(idx, 0, child);
+        else this.children.push(child);
+        return child;
+      },
+      remove() {
+        if (!this.parentElement) return;
+        const idx = this.parentElement.children.indexOf(this);
+        if (idx >= 0) this.parentElement.children.splice(idx, 1);
+        this.parentElement = null;
+      },
+      contains(target) { return target === this || this.children.some((c) => c.contains(target)); },
+      getBoundingClientRect() { return { left: 100, top: 100, right: 300, bottom: 140, width: 200, height: 40 }; },
+      closest(sel) {
+        let cur = this;
+        while (cur) {
+          if (matches(cur, sel)) return cur;
+          cur = cur.parentElement;
+        }
+        return null;
+      },
+      querySelector(sel) {
+        for (const c of this.children) {
+          if (matches(c, sel)) return c;
+          const n = c.querySelector(sel);
+          if (n) return n;
+        }
+        return null;
+      },
+      querySelectorAll(sel) {
+        const res = [];
+        for (const c of this.children) {
+          if (matches(c, sel)) res.push(c);
+          res.push(...c.querySelectorAll(sel));
+        }
+        return res;
+      },
+      getElementsByClassName(cls) {
+        const res = [];
+        for (const c of this.children) {
+          if (String(c.className || '').split(/\s+/).includes(cls)) res.push(c);
+          res.push(...c.getElementsByClassName(cls));
+        }
+        return res;
+      },
+    };
+    Object.defineProperty(el, 'innerHTML', {
+      get() { return this._innerHTML; },
+      set(val) {
+        this._innerHTML = String(val);
+        this.children = [];
+        if (this._innerHTML.includes('cr-graphic-slot') && this._innerHTML.includes('cr-pct-text')) {
+          const s = createMockEl('span'); s.className = 'cr-graphic-slot';
+          const p = createMockEl('span'); p.className = 'cr-pct-text'; p.textContent = '0%';
+          this.appendChild(s); this.appendChild(p);
+        } else if (this._innerHTML.includes('cr-plan-pill-label')) {
+          const lbl = createMockEl('span'); lbl.className = 'cr-plan-pill-label'; lbl.textContent = 'Planning';
+          this.appendChild(lbl);
+        }
+      },
+    });
+    return el;
+  }
+
+  function matches(el, sel) {
+    if (!el || !sel) return false;
+    if (sel.startsWith('#')) return el.id === sel.slice(1);
+    if (sel.startsWith('.')) {
+      const cls = sel.slice(1);
+      return String(el.className || '').split(/\s+/).includes(cls) || el.classList.contains(cls);
+    }
+    if (sel === '[contenteditable="true"]') return el.getAttribute('contenteditable') === 'true';
+    if (sel === '[data-testid="model-selector-trigger"]') return el.getAttribute('data-testid') === 'model-selector-trigger';
+    return false;
+  }
+
+  const head = createMockEl('head');
+  const body = createMockEl('body');
+  const card = createMockEl('div');
+  card.className = 'surface-composer-card';
+  const editor = createMockEl('div');
+  editor.setAttribute('contenteditable', 'true');
+  const footer = createMockEl('div');
+  footer.className = 'agy-composer-footer';
+  const leftSlot = createMockEl('div');
+  const rightSlot = createMockEl('div');
+  footer.appendChild(leftSlot);
+  footer.appendChild(rightSlot);
+  card.appendChild(editor);
+  card.appendChild(footer);
+  body.appendChild(card);
+
+  const cidA = '11111111-aaaa-bbbb-cccc-000000000001';
+  const cidB = '22222222-aaaa-bbbb-cccc-000000000002';
+  const winListeners = new Map();
+  const rpcCalls = [];
+  let activeSessions = [];
+  let pendingNew = false;
+
+  const composerFiber = {
+    memoizedProps: {
+      handleSubmit: () => {},
+      cascadeId: cidA,
+      slashCommandItems: [
+        { title: 'plan', info: { name: 'plan', modelFacingText: '<PLAN>Host Native Plan</PLAN>' } },
+      ],
+    },
+    return: null,
+  };
+  editor['__reactFiber$test'] = composerFiber;
+  footer['__reactFiber$test'] = composerFiber;
+
+  const sandbox = {
+    console, Math, Number, String, Boolean, Array, Object, Map, Set, JSON, Promise, Date,
+    setTimeout: (fn, ms) => { const t = setTimeout(fn, ms); t.unref?.(); return t; },
+    clearTimeout,
+    setInterval: (fn, ms) => { const t = setInterval(fn, ms); t.unref?.(); return t; },
+    clearInterval,
+    requestAnimationFrame: (fn) => setTimeout(fn, 0),
+    cancelAnimationFrame: clearTimeout,
+    location: { pathname: `/c/${cidA}` },
+    navigator: {},
+    MutationObserver: class { observe() {} disconnect() {} },
+    getComputedStyle: () => ({ backgroundColor: 'rgb(255, 255, 255)', display: 'flex' }),
+    document: {
+      head, body,
+      documentElement: createMockEl('html'),
+      createElement: (t) => createMockEl(t),
+      getElementById: (id) => head.querySelector(`#${id}`) || body.querySelector(`#${id}`) || null,
+      getElementsByClassName: (cls) => body.getElementsByClassName(cls),
+      querySelector: (sel) => body.querySelector(sel),
+      querySelectorAll: (sel) => body.querySelectorAll(sel),
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      hasFocus: () => true,
+    },
+    window: null,
+  };
+  sandbox.window = sandbox;
+  sandbox.innerWidth = 1280;
+  sandbox.innerHeight = 800;
+  sandbox.addEventListener = (ev, fn) => {
+    if (!winListeners.has(ev)) winListeners.set(ev, new Set());
+    winListeners.get(ev).add(fn);
+  };
+  sandbox.removeEventListener = (ev, fn) => winListeners.get(ev)?.delete(fn);
+  sandbox.__contextRingHost = (raw) => {
+    const req = JSON.parse(raw);
+    rpcCalls.push(req);
+    let resp = { id: req.id, ok: true };
+    if (req.method === 'usage.get') {
+      resp.usage = createEmptyUsage(req.params?.conversationId || '', '');
+      resp.planning = { activeSessionIds: activeSessions.slice(), activeCount: activeSessions.length, pendingNewSession: pendingNew, error: '' };
+    } else if (req.method === 'planning.set') {
+      const targetCid = String(req.params?.conversationId || '');
+      if (targetCid) {
+        activeSessions = req.params.enabled
+          ? Array.from(new Set([...activeSessions, targetCid]))
+          : activeSessions.filter((x) => x !== targetCid);
+      } else {
+        pendingNew = Boolean(req.params.enabled);
+      }
+      resp.planning = { activeSessionIds: activeSessions.slice(), activeCount: activeSessions.length, pendingNewSession: pendingNew, error: '' };
+    } else if (req.method === 'planning.get') {
+      resp.planning = { activeSessionIds: activeSessions.slice(), activeCount: activeSessions.length, pendingNewSession: pendingNew, error: '' };
+    }
+    queueMicrotask(() => sandbox.__contextRingResolveRpc(resp));
+  };
+
+  const source = buildInjectedSource(DEFAULT_SETTINGS, '1.1.0');
+  vm.runInNewContext(source, sandbox);
+  await new Promise((r) => setTimeout(r, 35));
+
+  const planHost = footer.querySelector('.agy-context-ring-planning-host');
+  assert.ok(planHost, '底栏应自动挂载 Planning 切换胶囊');
+  const planBtn = planHost.querySelector('.cr-plan-pill-btn');
+  assert.equal(planBtn.getAttribute('data-active'), '0');
+  assert.equal(planHost.querySelector('.cr-plan-pill-label').textContent, 'Planning');
+
+  // 点击底栏胶囊为会话 A 开启 Planning，并自动携带采样到的原生 /plan 文本
+  planBtn.dispatchEvent('click', { stopPropagation() {} });
+  await new Promise((r) => setTimeout(r, 35));
+  const setCall = rpcCalls.find((c) => c.method === 'planning.set');
+  assert.ok(setCall, '点击底栏胶囊应发起 planning.set RPC');
+  assert.equal(setCall.params.conversationId, cidA);
+  assert.equal(setCall.params.enabled, true);
+  assert.equal(setCall.params.nativePlanText, '<PLAN>Host Native Plan</PLAN>');
+  assert.equal(planBtn.getAttribute('data-active'), '1');
+  assert.equal(planHost.querySelector('.cr-plan-pill-label').textContent, 'Planning');
+
+  // 切换到会话 B：按钮必须立刻切回未开启态（按会话隔离）
+  composerFiber.memoizedProps = { ...composerFiber.memoizedProps, cascadeId: cidB };
+  sandbox.location.pathname = `/c/${cidB}`;
+  for (const fn of winListeners.get('popstate') || []) fn();
+  await new Promise((r) => setTimeout(r, 35));
+  assert.equal(planBtn.getAttribute('data-active'), '0', '切换到未开启 Planning 的会话 B 时必须显示未开启');
+
+  // 关闭底栏 Planning 显示开关后应立即移除底栏节点
+  sandbox.__contextRingReceiveSettings({ ...DEFAULT_SETTINGS, showFooterPlanning: false });
+  assert.equal(footer.querySelector('.agy-context-ring-planning-host'), null);
+
+  // 重新显示后，卸载清理函数必须无痕移除
+  sandbox.__contextRingReceiveSettings({ ...DEFAULT_SETTINGS, showFooterPlanning: true });
+  assert.ok(footer.querySelector('.agy-context-ring-planning-host'));
+  sandbox.__CONTEXT_RING_CLEANUP__();
+  assert.equal(footer.querySelector('.agy-context-ring-planning-host'), null);
+});
+
+test('composer-widget (replay-fork): 选中历史步骤点击「分支继续」精确截断工具边界并跳转新分支会话', async () => {
+  function createMockClassList() {
+    const set = new Set();
+    return {
+      add: (...names) => names.forEach((n) => set.add(n)),
+      remove: (...names) => names.forEach((n) => set.delete(n)),
+      toggle: (name, force) => {
+        if (force === undefined) {
+          if (set.has(name)) { set.delete(name); return false; }
+          set.add(name); return true;
+        }
+        if (force) set.add(name);
+        else set.delete(name);
+        return Boolean(force);
+      },
+      contains: (name) => set.has(name),
+      toString: () => Array.from(set).join(' '),
+    };
+  }
+
+  function createMockEl(tagName = 'div') {
+    const attrs = new Map();
+    const el = {
+      tagName: String(tagName).toUpperCase(),
+      nodeType: 1,
+      id: '',
+      className: '',
+      dataset: {},
+      style: {},
+      textContent: '',
+      title: '',
+      disabled: false,
+      children: [],
+      parentElement: null,
+      classList: createMockClassList(),
+      _innerHTML: '',
+      _listeners: new Map(),
+      setAttribute(k, v) {
+        attrs.set(k, String(v));
+        if (k === 'id') this.id = String(v);
+        if (k === 'class') this.className = String(v);
+      },
+      getAttribute(k) { return attrs.has(k) ? attrs.get(k) : null; },
+      hasAttribute(k) { return attrs.has(k); },
+      addEventListener(ev, fn) {
+        if (!this._listeners.has(ev)) this._listeners.set(ev, new Set());
+        this._listeners.get(ev).add(fn);
+      },
+      removeEventListener(ev, fn) { this._listeners.get(ev)?.delete(fn); },
+      dispatchEvent(evName, evObj = {}) {
+        for (const fn of this._listeners.get(evName) || []) fn(evObj);
+      },
+      appendChild(child) {
+        if (child.parentElement) child.remove();
+        child.parentElement = this;
+        this.children.push(child);
+        return child;
+      },
+      insertBefore(child, ref) {
+        if (child.parentElement) child.remove();
+        child.parentElement = this;
+        const idx = ref ? this.children.indexOf(ref) : -1;
+        if (idx >= 0) this.children.splice(idx, 0, child);
+        else this.children.push(child);
+        return child;
+      },
+      remove() {
+        if (!this.parentElement) return;
+        const idx = this.parentElement.children.indexOf(this);
+        if (idx >= 0) this.parentElement.children.splice(idx, 1);
+        this.parentElement = null;
+      },
+      contains(target) { return target === this || this.children.some((c) => c.contains(target)); },
+      getBoundingClientRect() { return { left: 100, top: 100, right: 300, bottom: 140, width: 200, height: 40 }; },
+      closest(sel) {
+        let cur = this;
+        while (cur) {
+          if (matches(cur, sel)) return cur;
+          cur = cur.parentElement;
+        }
+        return null;
+      },
+      querySelector(sel) {
+        for (const c of this.children) {
+          if (matches(c, sel)) return c;
+          const n = c.querySelector(sel);
+          if (n) return n;
+        }
+        return null;
+      },
+      querySelectorAll(sel) {
+        const res = [];
+        for (const c of this.children) {
+          if (matches(c, sel)) res.push(c);
+          res.push(...c.querySelectorAll(sel));
+        }
+        return res;
+      },
+      getElementsByClassName(cls) {
+        const res = [];
+        for (const c of this.children) {
+          if (String(c.className || '').split(/\s+/).includes(cls)) res.push(c);
+          res.push(...c.getElementsByClassName(cls));
+        }
+        return res;
+      },
+    };
+    Object.defineProperty(el, 'innerHTML', {
+      get() { return this._innerHTML; },
+      set(val) {
+        this._innerHTML = String(val);
+        this.children = [];
+        const html = this._innerHTML;
+        if (html.includes('cr-graphic-slot') && html.includes('cr-pct-text')) {
+          const s = createMockEl('span'); s.className = 'cr-graphic-slot';
+          const p = createMockEl('span'); p.className = 'cr-pct-text'; p.textContent = '0%';
+          this.appendChild(s); this.appendChild(p);
+        } else if (html.includes('cr-plan-pill-label')) {
+          const lbl = createMockEl('span'); lbl.className = 'cr-plan-pill-label'; lbl.textContent = 'Planning';
+          this.appendChild(lbl);
+        } else if (html.includes('data-role="step-replay-bar"')) {
+          const roles = [
+            ['span', 'pct'], ['span', 'summary'], ['button', 'val-steps'], ['div', 'step-menu'],
+            ['button', 'open-settings-btn'], ['div', 'seg-cache'], ['div', 'seg-input'], ['div', 'seg-output'],
+            ['div', 'chip-cache'], ['div', 'val-cache'], ['div', 'chip-input'], ['div', 'val-input'],
+            ['div', 'chip-output'], ['div', 'val-output'], ['div', 'step-replay-bar'], ['span', 'step-replay-info'],
+            ['button', 'step-prev-btn'], ['button', 'step-next-btn'], ['button', 'step-fork-btn'], ['button', 'step-live-btn'],
+            ['div', 'speed-bar'], ['span', 'speed-tps'], ['span', 'speed-grade'], ['span', 'speed-meta'],
+            ['div', 'effort-box'], ['span', 'effort-caption'], ['div', 'model-picker'], ['button', 'model-picker-btn'],
+            ['span', 'current-model-quota'], ['span', 'effort-model'], ['div', 'model-menu'], ['div', 'effort-rail'],
+            ['div', 'effort-energy'], ['div', 'effort-pill'], ['div', 'effort-grid'], ['div', 'plan-bar'],
+            ['span', 'plan-bar-sub'], ['button', 'plan-toggle-btn'], ['div', 'limit-group'],
+            ['button', 'compact-btn'], ['span', 'compact-label'], ['span', 'rehydrate-dot'],
+          ];
+          for (const [tag, role] of roles) {
+            const child = createMockEl(tag);
+            child.setAttribute('data-role', role);
+            if (role === 'val-steps') {
+              const txt = createMockEl('span');
+              txt.setAttribute('data-role', 'val-steps-text');
+              child.appendChild(txt);
+            }
+            this.appendChild(child);
+          }
+        } else if (html.includes('data-step="latest"')) {
+          const opt1 = createMockEl('button');
+          opt1.className = 'cr-step-option';
+          opt1.setAttribute('data-step', '1');
+          opt1.setAttribute('data-turn', '1');
+          opt1.setAttribute('data-total-turns', '2');
+          this.appendChild(opt1);
+        }
+      },
+    });
+    return el;
+  }
+
+  function matches(el, sel) {
+    if (!el || !sel) return false;
+    if (sel.startsWith('#')) return el.id === sel.slice(1);
+    if (sel.startsWith('.')) {
+      const cls = sel.slice(1);
+      return String(el.className || '').split(/\s+/).includes(cls) || el.classList.contains(cls);
+    }
+    const roleM = sel.match(/^\[data-role="([^"]+)"\]$/);
+    if (roleM) return el.getAttribute('data-role') === roleM[1];
+    if (sel === '[contenteditable="true"]') return el.getAttribute('contenteditable') === 'true';
+    if (sel === '[data-testid="model-selector-trigger"]') return el.getAttribute('data-testid') === 'model-selector-trigger';
+    return false;
+  }
+
+  const head = createMockEl('head');
+  const body = createMockEl('body');
+  const card = createMockEl('div');
+  card.className = 'surface-composer-card';
+  const editor = createMockEl('div');
+  editor.setAttribute('contenteditable', 'true');
+  const footer = createMockEl('div');
+  footer.className = 'agy-composer-footer';
+  footer.appendChild(createMockEl('div'));
+  footer.appendChild(createMockEl('div'));
+  card.appendChild(editor);
+  card.appendChild(footer);
+  body.appendChild(card);
+
+  const sourceCid = '11111111-1111-1111-1111-111111111111';
+  const forkedCid = '99999999-9999-9999-9999-999999999999';
+  const forkCalls = [];
+  const navCalls = [];
+
+  const mockLsClient = {
+    retrieveUserQuotaSummary: async () => ({}),
+    getCascadeTrajectory: async () => ({
+    trajectory: {
+      steps: [
+        { metadata: { stepIndex: 0 }, step: { case: 'userInput' } },
+        { metadata: { stepIndex: 1 }, step: { case: 'plannerResponse' } },
+        { metadata: { stepIndex: 2 }, step: { case: 'generic' } },
+        { metadata: { stepIndex: 3 }, step: { case: 'generic' } },
+        { metadata: { stepIndex: 4 }, step: { case: 'plannerResponse' } },
+        { metadata: { stepIndex: 5 }, step: { case: 'userInput' } },
+        { metadata: { stepIndex: 6 }, step: { case: 'plannerResponse' } },
+        { metadata: { stepIndex: 7 }, step: { case: 'plannerResponse' } },
+      ],
+    },
+  }),
+  forkConversation: async (req) => {
+    forkCalls.push(req);
+    return { newCascadeId: forkedCid };
+  },
+  };
+  const mockRouter = {
+    buildRouteTree: () => ({}),
+    navigate: async (opts) => { navCalls.push(opts); },
+  };
+  const composerFiber = {
+    memoizedProps: { handleSubmit: () => {}, cascadeId: sourceCid, lsClient: mockLsClient, router: mockRouter },
+    return: null,
+  };
+  editor['__reactFiber$test'] = composerFiber;
+  footer['__reactFiber$test'] = composerFiber;
+
+  const usageObj = {
+    ...createEmptyUsage(sourceCid, ''),
+    turnCount: 2,
+    plannerStepCount: 4,
+    totalTokens: 90000,
+    steps: [
+      { step: 1, turn: 1, stepIndex: 1, inputTokens: 10000, cacheReadTokens: 20000, outputTokens: 500, totalTokens: 30500, deltaTokens: 30500, cacheHitRate: 66.7, promptSnippet: '第一轮提问' },
+      { step: 2, turn: 1, stepIndex: 4, inputTokens: 1000, cacheReadTokens: 39000, outputTokens: 500, totalTokens: 40500, deltaTokens: 10000, cacheHitRate: 97.5, promptSnippet: '第一轮提问' },
+      { step: 3, turn: 2, stepIndex: 6, inputTokens: 2000, cacheReadTokens: 60000, outputTokens: 600, totalTokens: 62600, deltaTokens: 22100, cacheHitRate: 96.8, promptSnippet: '第二轮提问' },
+      { step: 4, turn: 2, stepIndex: 7, inputTokens: 5000, cacheReadTokens: 84000, outputTokens: 1000, totalTokens: 90000, deltaTokens: 27400, cacheHitRate: 94.4, promptSnippet: '第二轮提问' },
+    ],
+  };
+
+  const sandbox = {
+    console, Math, Number, String, Boolean, Array, Object, Map, Set, JSON, Promise, Date, Event,
+    setTimeout: (fn, ms) => { const t = setTimeout(fn, ms); t.unref?.(); return t; },
+    clearTimeout,
+    setInterval: (fn, ms) => { const t = setInterval(fn, ms); t.unref?.(); return t; },
+    clearInterval,
+    requestAnimationFrame: (fn) => setTimeout(fn, 0),
+    cancelAnimationFrame: clearTimeout,
+    location: { pathname: `/c/${sourceCid}` },
+    navigator: {},
+    MutationObserver: class { observe() {} disconnect() {} },
+    getComputedStyle: () => ({ backgroundColor: 'rgb(255, 255, 255)', display: 'flex' }),
+    document: {
+      head, body,
+      documentElement: createMockEl('html'),
+      createElement: (t) => createMockEl(t),
+      getElementById: (id) => head.querySelector(`#${id}`) || body.querySelector(`#${id}`) || null,
+      getElementsByClassName: (cls) => body.getElementsByClassName(cls),
+      querySelector: (sel) => body.querySelector(sel),
+      querySelectorAll: (sel) => body.querySelectorAll(sel),
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      hasFocus: () => true,
+    },
+    window: null,
+  };
+  sandbox.window = sandbox;
+  sandbox.innerWidth = 1280;
+  sandbox.innerHeight = 800;
+  sandbox.addEventListener = () => {};
+  sandbox.removeEventListener = () => {};
+  sandbox.__contextRingHost = (raw) => {
+    const req = JSON.parse(raw);
+    const resp = { id: req.id, ok: true };
+    if (req.method === 'usage.get') resp.usage = usageObj;
+    queueMicrotask(() => sandbox.__contextRingResolveRpc(resp));
+  };
+
+  const source = buildInjectedSource({ ...DEFAULT_SETTINGS, contextLimit: 512000 }, '1.1.0');
+  vm.runInNewContext(source, sandbox);
+  await new Promise((r) => setTimeout(r, 35));
+
+  // 打开悬浮卡片，验证默认按「轮」切换：从第 2 轮（step 4）点一次 ‹ 应直接跳到第 1 轮轮末（step 2）
+  footer.querySelector('.cr-trigger-btn').dispatchEvent('click', { stopPropagation() {} });
+  const pop = body.querySelector('#agy-context-ring-popover');
+  pop.querySelector('[data-role="val-steps"]').dispatchEvent('click', { stopPropagation() {} });
+  const stepMenu = pop.querySelector('[data-role="step-menu"]');
+  const opt1 = stepMenu.querySelector('.cr-step-option');
+  stepMenu.dispatchEvent('click', { stopPropagation() {}, target: opt1 });
+
+  // 从第 1 轮点 › 应直接跳到第 2 轮轮末（step 4），再点 ‹ 直接回到第 1 轮轮末（step 2）
+  const nextBtn = pop.querySelector('[data-role="step-next-btn"]');
+  const prevBtn = pop.querySelector('[data-role="step-prev-btn"]');
+  nextBtn.dispatchEvent('click', { stopPropagation() {} });
+  assert.equal(pop.querySelector('[data-role="val-steps-text"]').textContent, '第 2 / 2 轮');
+  assert.ok(pop.querySelector('[data-role="step-replay-info"]').innerHTML.includes('回放 第 2 轮'));
+
+  prevBtn.dispatchEvent('click', { stopPropagation() {} });
+  assert.equal(pop.querySelector('[data-role="val-steps-text"]').textContent, '第 1 / 2 轮');
+  assert.ok(pop.querySelector('[data-role="step-replay-info"]').innerHTML.includes('回放 第 1 轮'));
+  assert.equal(prevBtn.disabled, true, '第 1 轮时 ‹ 必须禁用');
+
+  // 点击「分支继续」按钮
+  const forkBtn = pop.querySelector('[data-role="step-fork-btn"]');
+  forkBtn.dispatchEvent('click', { stopPropagation() {}, currentTarget: forkBtn });
+  await new Promise((r) => setTimeout(r, 40));
+
+  assert.equal(forkCalls.length, 1, '应调用一次原生 forkConversation');
+  assert.equal(forkCalls[0].sourceCascadeId, sourceCid);
+  assert.equal(forkCalls[0].forkAtStepIndex, 4, '按轮分支应完整保留第 1 轮全部步骤，截断到第 2 轮 userInput 之前 (stepIndex 4)');
+  assert.equal(navCalls.length, 1, '分支成功后应调用原生路由跳转到新会话');
+  assert.equal(navCalls[0].to, `/c/${forkedCid}`);
+
+  sandbox.__CONTEXT_RING_CLEANUP__();
 });

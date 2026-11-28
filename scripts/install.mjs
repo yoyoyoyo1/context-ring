@@ -13,7 +13,13 @@ import {
 import { createSettingsStore } from '../lib/settings.mjs';
 import { getConversationUsage } from '../lib/transcript-parser.mjs';
 import { enrichUsageWithTelemetry } from '../lib/ls-telemetry.mjs';
-import { getRehydrateStatus, removeRehydrateHook } from '../lib/rehydrate-manager.mjs';
+import { getRehydrateStatus, setRehydrateEnabled, removeRehydrateHook } from '../lib/rehydrate-manager.mjs';
+import {
+  getPlanningStatus,
+  readPlanningState,
+  syncPlanningHookRegistration,
+  removePlanningHook,
+} from '../lib/planning-manager.mjs';
 import {
   configureClientLaunchers,
   restoreClientLaunchers,
@@ -297,6 +303,17 @@ async function runInstall() {
     `  -> 已启用插件 (当前形态: ${currentSettings.styleMode}, 上限: ${limitLabel}, 零 app.asar 修改)`
   );
 
+  // 自动刷新已注册 Hook 的 Node 启动命令（修复旧版在 Electron Sidecar 中写入外壳路径的问题）
+  const rhBefore = getRehydrateStatus({ homeDir: paths.home, pluginRoot: paths.installDir });
+  if (rhBefore.registered && rhBefore.enabled) {
+    setRehydrateEnabled(true, { homeDir: paths.home, pluginRoot: paths.installDir });
+  }
+  const planState = readPlanningState({ homeDir: paths.home, dataDir: paths.dataDir });
+  const planBefore = getPlanningStatus({ homeDir: paths.home, dataDir: paths.dataDir, pluginRoot: paths.installDir });
+  if (planBefore.hookRegistered || Object.keys(planState.sessions).length > 0 || planState.pendingNewSession?.enabled) {
+    syncPlanningHookRegistration(planState, { homeDir: paths.home, dataDir: paths.dataDir, pluginRoot: paths.installDir });
+  }
+
   console.log('\n=== [3/4] 配置客户端快捷方式本地调试参数 ===');
   const launcherRes = configureClientLaunchers({ home: paths.home, dataDir: paths.dataDir });
   if (launcherRes.modifiedShortcuts.length > 0 || launcherRes.modifiedDesktopEntries.length > 0) {
@@ -353,6 +370,15 @@ async function runUninstall(keepSettings = false) {
   const rehydrateClean = removeRehydrateHook({ homeDir: paths.home, pluginRoot: paths.installDir });
   if (rehydrateClean.ok) {
     console.log('  -> 已检查并无痕清理压缩后防失忆 Hook 条目');
+  }
+
+  const planningClean = removePlanningHook({
+    homeDir: paths.home,
+    dataDir: paths.dataDir,
+    pluginRoot: paths.installDir,
+  });
+  if (planningClean.ok) {
+    console.log('  -> 已检查并无痕清理 Planning 只读规划护栏 Hook 条目');
   }
 
   const restoreRes = restoreClientLaunchers({ home: paths.home, dataDir: paths.dataDir });
@@ -432,6 +458,7 @@ async function runStatus() {
     }`
   );
   const rehydrate = getRehydrateStatus({ homeDir: paths.home, pluginRoot: paths.installDir });
+  const planning = getPlanningStatus({ homeDir: paths.home, dataDir: paths.dataDir, pluginRoot: paths.installDir });
   const limitLabel =
     Number(settings.contextLimit) > 0 ? `${Math.round(settings.contextLimit / 1000)}k` : '自动识别';
   console.log(
@@ -443,7 +470,14 @@ async function runStatus() {
     }`
   );
   console.log(
-    `7. 最近活跃会话 : ${
+    `7. Planning 模式 : ${
+      planning.activeCount > 0 || planning.pendingNewSession
+        ? `激活中 (活跃会话=${planning.activeCount}${planning.pendingNewSession ? ', 新会话预挂起=是' : ''}, Hook=${planning.hookMode})`
+        : `待机 (${planning.hookMode === 'exit-only' ? '等待退出通知投递' : '零 Hook 进程开销'})`
+    }`
+  );
+  console.log(
+    `8. 最近活跃会话 : ${
       usage.conversationId
         ? `${usage.conversationId.slice(0, 8)}… (总计 ${usage.totalTokens.toLocaleString()} tokens, 缓存命中 ${usage.cacheHitRate}%)`
         : '未检测到会话日志'
